@@ -2,7 +2,7 @@
 import { nodesById, parseVtt } from './util.js'
 
 // ------------------------------------------------------------------ sound
-export function makeSound (three, world, speakers, policy, root) {
+export function makeSound (three, world, speakers, policy, root, chainFactory = null) {
   const { camera, nodePos, heightOf } = world
   let listener = null, ctx = null, enabled = false, muted = false, paused = false, timer = 0
   const buses = {}
@@ -29,18 +29,27 @@ export function makeSound (three, world, speakers, policy, root) {
     pa.setDirectionalCone(180, 270, 0.2)
     const gain = ctx.createGain(); gain.gain.value = 0
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = lod === 'region' ? 400 : 700   // a new voice murmurs until promoted
-    pa.gain.disconnect(); pa.gain.connect(gain); gain.connect(lp); lp.connect(buses[busOf(s)])
+    // panner -> gain (crossfade, duck) -> low-pass (murmur) -> [voice chain, if a MODULE gave one] -> bus
+    pa.gain.disconnect(); pa.gain.connect(gain); gain.connect(lp)
+    let chain = null
+    if (chainFactory) {
+      try {
+        chain = chainFactory(ctx, { id: s.id, slug: s.slug, title: s.title, role: s.role, district: s.district, voice: s.voice, language: s.language || 'en', x: e.x, y: e.y, z: e.z }, policy) || null
+      } catch (err) { console.warn('hear: voice chain failed for', s.slug, err); chain = null }
+    }
+    if (chain?.input && chain?.output) { lp.connect(chain.input); chain.output.connect(buses[busOf(s)]) } else { chain = null; lp.connect(buses[busOf(s)]) }
     pa.position.set(e.x, e.y, e.z)
     const d = new three.Vector3(e.x - world.sqPos[0], 0, e.z - world.sqPos[1]).normalize()
     pa.lookAt(new three.Vector3(e.x - d.x, e.y, e.z - d.z))
     world.scene.add(pa)
-    Object.assign(e, { el, pa, gain, lp })
+    Object.assign(e, { el, pa, gain, lp, chain })
   }
   const teardown = e => {
     if (!e.pa) return
     e.el.pause(); e.el.src = ''; world.scene.remove(e.pa)
     try { e.pa.disconnect() } catch {}
-    Object.assign(e, { el: null, pa: null, gain: null, lp: null, started: false })
+    try { e.chain?.dispose?.() } catch {}
+    Object.assign(e, { el: null, pa: null, gain: null, lp: null, chain: null, started: false })
   }
   const live = () => [...emitters.values()].filter(e => e.pa).length
 
@@ -62,11 +71,8 @@ export function makeSound (three, world, speakers, policy, root) {
     timer = setInterval(() => frame(0.15), 150)   // independent of the render loop
   }
 
-  const proximity = e => {
-    const c = world.ctl.pos
-    const d = Math.hypot(e.x - c.x, e.z - c.z, (e.y - c.y) * 0.5)
-    return Math.max(0, 1 - d / 45)
-  }
+  const distance = e => { const c = world.ctl.pos; return Math.hypot(e.x - c.x, e.z - c.z, (e.y - c.y) * 0.5) }
+  const proximity = e => Math.max(0, 1 - distance(e) / 45)
   const facing = e => {
     const to = new three.Vector3(e.x - camera.position.x, 0, e.z - camera.position.z).normalize()
     const f = new three.Vector3(); camera.getWorldDirection(f); f.y = 0; f.normalize()
@@ -129,6 +135,7 @@ export function makeSound (three, world, speakers, policy, root) {
     lod = lodOf()
     const all = [...emitters.values()]
     for (const e of all) e.score = score(e)
+    for (const e of all) if (e.chain?.update && e.pa) { try { e.chain.update({ distance: distance(e), facing: facing(e), intelligible: e.intelligible, active: e.active, lod, score: e.score, focused: focusId === e.s.id }) } catch {} }
     for (const e of all) if (!e.active && e.pa && now - e.idleSince > 20000 && live() > MAX_NODES) teardown(e)
     if (insideId) {
       for (const e of all) {
@@ -177,6 +184,8 @@ export function makeSound (three, world, speakers, policy, root) {
     bus (name, v) { if (buses[name]) buses[name].gain.value = v },
     currentTime (id) { return emitters.get(id)?.el?.currentTime ?? 0 },
     get lod () { return lod },
+    get chainFactory () { return chainFactory },
+    setChain (fn) { chainFactory = typeof fn === 'function' ? fn : null; for (const e of emitters.values()) teardown(e) },   // live swap from the console: graphs rebuild on next activation
     get liveNodes () { return live() },
     async cues (id) {
       const e = emitters.get(id); if (!e) return []

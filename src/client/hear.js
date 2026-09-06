@@ -11,6 +11,7 @@ import { wireHud } from './hud.js'
 //   POLICY https://…/soundscape-policy.json   the mixing rules: budget, deadband, crossfade
 //   STREET clause.legalcommons.org/right-to-amparo   the square (defaults to map.street.square)
 //   HEIGHT 520                                 pixels
+//   MODULE https://…/voice-chain.js           an ES module exporting createVoiceChain(ctx, voice, policy): per-voice DSP between the murmur filter and the bus
 //
 // Geometry is built from map.json in code: regions extruded, houses as instanced
 // boxes sized by story length, the square a plaza, roads from the edges.  No
@@ -24,7 +25,7 @@ let stylesInjected = false
 
 // ------------------------------------------------------------------ DSL
 export const parseText = text => {
-  const spec = { map: '', media: '', policy: '', street: '', height: 520, caption: [] }
+  const spec = { map: '', media: '', policy: '', street: '', module: '', height: 520, caption: [] }
   for (const raw of (text || '').split('\n')) {
     const line = raw.trim()
     if (!line) continue
@@ -35,6 +36,7 @@ export const parseText = text => {
     else if (cmd === 'MEDIA') spec.media = val
     else if (cmd === 'POLICY') spec.policy = val
     else if (cmd === 'STREET') spec.street = val
+    else if (cmd === 'MODULE') spec.module = val
     else if (cmd === 'HEIGHT') spec.height = Math.max(240, parseInt(val, 10) || 520)
     else spec.caption.push(line)
   }
@@ -218,8 +220,12 @@ async function start (root, spec, div) {
   let three
   try { three = await import(THREE_URL) } catch (e) { setStatus(root, `Three.js did not load (${e.message}); showing the list.`); renderList(root, map, speakers, squareId, div); return }
 
+  let chainFactory = null
+  if (spec.module) {
+    try { chainFactory = (await import(spec.module)).createVoiceChain || null } catch (e) { setStatus(root, `Voice module did not load (${e.message}); voices use the plain chain.`) }
+  }
   const world = buildWorld(three, root, map, speakers, squareId)
-  const sound = makeSound(three, world, speakers, policy, root)
+  const sound = makeSound(three, world, speakers, policy, root, chainFactory)
   wireHud(root, world, sound, speakers, map, div)
   setStatus(root, `${map.nodes.length} pages · ${map.regions.length} regions · ${speakers.length} voices · policy ${policyRaw?.policy_id || 'default'}`)
 

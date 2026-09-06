@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Hear Crowds harness</title>
+<style>body{font:14px Helvetica,Arial;margin:16px;max-width:980px}#item{margin:12px 0}textarea{width:100%;height:120px;font:12px monospace}</style>
+<h1>Hear Crowds outside the wiki</h1>
+<p>The plugin bundle is loaded from atlas.anarchive.earth; the map, voices and policy from its assets. Edit the item text and press Mount. Serve this file over http (for example <code>python3 -m http.server 8080</code> in this folder) so the MODULE line can load a local file and the wiki's CORS answers a real origin.</p>
+<textarea id="text">MAP https://atlas.anarchive.earth/assets/hear-crowds-demo/map.json
+MEDIA https://atlas.anarchive.earth/assets/hear-crowds-demo/city-media.json
+POLICY https://atlas.anarchive.earth/assets/hear-crowds-demo/soundscape-policy.json
+STREET clause.legalcommons.org/right-to-amparo
+MODULE ./voice-chain-air.js
+HEIGHT 600</textarea>
+<p><button id="mount">Mount</button> — then open the console: <code>window.hear</code> is the engine (<code>hear.sound.emitters</code>, <code>hear.sound.setChain(fn)</code>, <code>hear.policy</code>, <code>hear.world.ctl.pos</code>).</p>
+<div id="item"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://atlas.anarchive.earth/plugins/hear/hear.js"></script>
+<script>
+document.getElementById('mount').onclick = () => {
+  const $div = $('#item').empty()
+  const item = { type: 'hear', id: 'harness', text: document.getElementById('text').value }
+  window.plugins.hear.emit($div, item); window.plugins.hear.bind($div, item)
+  const wait = setInterval(() => { const r = $div.find('.hear-shell')[0]; if (r && r._hear) { window.hear = r._hear; clearInterval(wait); console.log('hear engine ready', window.hear) } }, 300)
+}
+</script>
