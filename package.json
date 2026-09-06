@@ -1,6 +1,6 @@
 {
   "name": "wiki-plugin-hear",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Federated Wiki plugin: walk a page-level GMap as a street and hear its pages speak — positional audio under a versioned soundscape policy, with transcripts and provenance one click away.",
   "type": "module",
   "main": "client/hear.js",

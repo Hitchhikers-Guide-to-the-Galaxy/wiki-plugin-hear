@@ -2,7 +2,7 @@
 import { esc, short, openPage } from './util.js'
 
 // ------------------------------------------------------------------ HUD, panel, interior
-export function wireHud (root, world, sound, speakers, map, div) {
+export function wireHud (root, world, sound, speakers, map, div, walk) {
   const hud = root.querySelector('.hear-hud')
   const panel = root.querySelector('.hear-panel')
   const solo = hud.querySelector('[data-act="solo"]')
@@ -17,7 +17,27 @@ export function wireHud (root, world, sound, speakers, map, div) {
   bMute.addEventListener('click', () => { const on = !bMute.classList.contains('on'); bMute.classList.toggle('on', on); sound.mute(on) })
   bPause.addEventListener('click', () => { const on = !bPause.classList.contains('on'); bPause.classList.toggle('on', on); sound.pause(on) })
   hud.querySelectorAll('input[data-bus]').forEach(r => r.addEventListener('input', () => sound.bus(r.dataset.bus, r.value / 100)))
-  hud.querySelector('[data-act="above"]').addEventListener('click', () => { world.above(); sound.focus(null); panel.hidden = true })
+  hud.querySelector('[data-act="above"]').addEventListener('click', () => { walk.stop(); world.above(); sound.focus(null); panel.hidden = true })
+  // Walk: the walker carries you round the street; Next skips to the next house; a walking key or Above ends it
+  const bWalk = hud.querySelector('[data-act="walk"]')
+  bWalk.addEventListener('click', () => { if (walk.state.on) walk.stop(); else walk.start() })
+  hud.querySelector('[data-act="next"]').addEventListener('click', () => walk.next())
+  walk.onLeg = () => { bWalk.classList.add('on'); bWalk.textContent = 'Stop walking' }
+  walk.onArrive = s => showPanel(s)
+  walk.onStop = () => { bWalk.classList.remove('on'); bWalk.textContent = 'Walk' }
+  // Close: back to the beginning state — outside, silent, the gate up; the voices and the place are kept for the next Enter
+  const reset = () => {
+    walk.stop(); root._hearTrial?.abort?.()
+    root.querySelector('.hear-inside')?.remove(); sound.leave()
+    panel.hidden = true; clearInterval(cueTimer)
+    if (sound.enabled) sound.silence()
+    world.ctl.keys.clear(); world.above()
+    hud.hidden = true; root.querySelector('.hear-trial').hidden = true
+    const st = root.querySelector('.hear-status'); if (st) st.textContent = root._hearBaseStatus || ''
+    root.querySelector('.hear-gate').hidden = false
+    bMute.classList.remove('on'); bPause.classList.remove('on'); sound.mute(false); sound.pause(false)
+  }
+  hud.querySelector('[data-act="close"]').addEventListener('click', reset)
   solo.addEventListener('change', () => { if (solo.value) goTo(solo.value) })
 
   const manifests = new Map()
@@ -28,7 +48,8 @@ export function wireHud (root, world, sound, speakers, map, div) {
 
   const goTo = id => {
     const s = speakers.find(x => x.id === id)
-    world.threshold(id); sound.focus(id)
+    walk.stop(); world.threshold(id)
+    if (sound.enabled) sound.listen(id); else sound.focus(id)   // from the top: the transcript starts at its first cue
     if (s) showPanel(s)
   }
   world.onPick = n => {
@@ -41,8 +62,9 @@ export function wireHud (root, world, sound, speakers, map, div) {
   const showPanel = async s => {
     panelId = s.id
     panel.hidden = false
-    panel.innerHTML = `<div class="hear-role">${s.role === 'human_reading' ? 'human reading' : 'synthetic voice'} · ${esc(s.voice || '')}</div><h4>${esc(s.title)}</h4><div style="color:#94a3b1;font-size:12px">${esc(s.heading || '')} · fragment ${esc(s.fragment_id || '')}${s.district ? ` · district ${esc(s.district)}` : ''}</div><div class="hear-cues"></div><div class="hear-prov">loading provenance…</div><div class="hear-actions"><button data-act="inside" class="primary">Go inside</button><button data-act="open">Open source page</button></div>`
+    panel.innerHTML = `<button class="hear-panel-close" data-act="dismiss" title="Close the transcript">✕</button><div class="hear-role">${s.role === 'human_reading' ? 'human reading' : 'synthetic voice'} · ${esc(s.voice || '')}</div><h4>${esc(s.title)}</h4><div style="color:#94a3b1;font-size:12px">${esc(s.heading || '')} · fragment ${esc(s.fragment_id || '')}${s.district ? ` · district ${esc(s.district)}` : ''}</div><div class="hear-cues"></div><div class="hear-prov">loading provenance…</div><div class="hear-actions"><button data-act="inside" class="primary">Go inside</button><button data-act="open">Open source page</button></div>`
     panel.querySelector('[data-act="open"]').addEventListener('click', () => openPage(div, s.title, s.id.split('/')[0]))
+    panel.querySelector('[data-act="dismiss"]').addEventListener('click', () => { panel.hidden = true })
     panel.querySelector('[data-act="inside"]').addEventListener('click', () => enterInterior(s))
     const cues = sound.enabled ? await sound.cues(s.id) : []
     const box = panel.querySelector('.hear-cues')
@@ -54,7 +76,13 @@ export function wireHud (root, world, sound, speakers, map, div) {
       if (!root.isConnected) { clearInterval(cueTimer); return }
       if (panel.hidden || panelId !== s.id) return
       const t = sound.currentTime(s.id)
-      box.querySelectorAll('p[data-i]').forEach((p, i) => p.classList.toggle('now', cues[i] && t >= cues[i].start && t < cues[i].end))
+      let current = null
+      box.querySelectorAll('p[data-i]').forEach((p, i) => { const on = !!(cues[i] && t >= cues[i].start && t < cues[i].end); p.classList.toggle('now', on); if (on) current = p })
+      if (current && current !== panel._cueEl) {   // keep the current cue in view by scrolling the panel only, never the page
+        panel._cueEl = current
+        const top = current.offsetTop - panel.scrollTop, bottom = top + current.offsetHeight
+        if (top < 0 || bottom > panel.clientHeight) panel.scrollTo({ top: current.offsetTop - panel.clientHeight / 2, behavior: 'smooth' })
+      }
     }, 250)
   }
 
@@ -84,7 +112,9 @@ export function wireHud (root, world, sound, speakers, map, div) {
     const st = root.querySelector('.hear-status')
     if (!st) return
     const talking = list.filter(x => x.intelligible).map(x => short(x.title))
-    st.textContent = `${lod} scale · ${list.length} of ${speakers.length} voices sounding, ${liveNodes} audio nodes alive · intelligible: ${talking.join(', ') || 'none'}`
+    const w = walk.state
+    const going = w.on ? (w.phase === 'leg' ? `walking to ${short(w.target.title)} · ${Math.round(w.remaining)} m · ` : `at ${short(w.target.title)}, listening · `) : ''
+    st.textContent = `${going}${lod} scale · ${list.length} of ${speakers.length} voices sounding, ${liveNodes} audio nodes alive · intelligible: ${talking.join(', ') || 'none'}`
   }
   root._hearTrial = wireTrial(root, world, sound, speakers)
 }
@@ -108,10 +138,11 @@ function wireTrial (root, world, sound, speakers) {
   const ask = (title, q, opts, extra = '') => new Promise(resolve => {
     box.hidden = false
     box.innerHTML = `<h4>${esc(title)}<span class="hear-timer"></span></h4><div class="hear-q">${q}</div>${extra}<div class="hear-opts">${opts.map((o, i) => `<button data-i="${i}" class="${o.primary ? 'primary' : ''}">${esc(o.label)}</button>`).join('')}</div>`
-    box.querySelectorAll('button[data-i]').forEach(b => b.addEventListener('click', () => { root.focus({ preventScroll: true }); resolve(opts[+b.dataset.i].value) }))
+    asking = resolve
+    box.querySelectorAll('button[data-i]').forEach(b => b.addEventListener('click', () => { root.focus({ preventScroll: true }); asking = null; resolve(opts[+b.dataset.i].value) }))
   })
   const timer = (t0) => { const el = box.querySelector('.hear-timer'); if (el) el.textContent = `${((performance.now() - t0) / 1000).toFixed(1)} s` }
-  let steering = null, hooked = false, sawFrame = false, pump = 0
+  let steering = null, hooked = false, sawFrame = false, pump = 0, aborted = false, asking = null
   const hook = () => {   // the sound engine installs its own frame hook when the gate opens; wrap it at run time, once
     if (!hooked) {
       hooked = true
@@ -138,7 +169,7 @@ function wireTrial (root, world, sound, speakers) {
         p.y = Math.max(1.7, p.y - 8 * dt); world.lookAtPoint(tx, 1.4, tz)
       }
     }
-    while (!gaveUp && distTo(target.id) > 4.5) { timer(t0); await wait(100); if (performance.now() - t0 > (auto ? 30000 : 120000)) gaveUp = true }
+    while (!gaveUp && !aborted && distTo(target.id) > 4.5) { timer(t0); await wait(100); if (performance.now() - t0 > (auto ? 30000 : 120000)) gaveUp = true }
     steering = null
     return { target: target.slug, title: target.title, seconds: +((performance.now() - t0) / 1000).toFixed(1), gaveUp }
   }
@@ -157,13 +188,14 @@ function wireTrial (root, world, sound, speakers) {
   }
   async function run ({ auto = false, listener = '' } = {}) {
     if (!sound.enabled) { await ask('Listening trial', 'Enter the soundscape first: the trial needs the voices.', [{ label: 'OK', value: 1, primary: true }]); box.hidden = true; return null }
-    hook()
+    hook(); aborted = false
     const pool = shuffle(nearSquare())
     if (pool.length < 6) { await ask('Listening trial', 'Not enough speaking houses near the square for a trial.', [{ label: 'OK', value: 1 }]); box.hidden = true; return null }
     const result = { listener: listener || (auto ? 'machine baseline' : 'listener'), auto, started: new Date().toISOString(), policy_id: sound.policy.policy_id || 'default', voices: speakers.length, isolate: [], attribute: [], fatigue: null, structure: null }
     if (!auto) await ask('Listening trial', 'Four short tasks, about five minutes: find three named houses by ear, name three clear voices, then two questions. Headphones help.', [{ label: 'Begin', value: 1, primary: true }])
-    for (const t of pool.slice(0, 3)) result.isolate.push(await isolate(t, auto))
-    for (const t of pool.slice(3, 6)) result.attribute.push(await attribute(t, auto))
+    for (const t of pool.slice(0, 3)) { if (aborted) return null; result.isolate.push(await isolate(t, auto)) }
+    for (const t of pool.slice(3, 6)) { if (aborted) return null; result.attribute.push(await attribute(t, auto)) }
+    if (aborted) return null
     world.above()
     if (!auto) {
       result.fatigue = await ask('How tired are your ears?', 'After those six tasks, from 1 (fresh) to 5 (I need silence).', [1, 2, 3, 4, 5].map(n => ({ label: String(n), value: n })))
@@ -182,7 +214,8 @@ function wireTrial (root, world, sound, speakers) {
     return result
   }
   const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null }
-  const trial = { run, last: null }
+  const abort = () => { aborted = true; steering = null; clearInterval(pump); box.hidden = true; const r = asking; asking = null; r?.(null) }
+  const trial = { run, abort, last: null }
   btn.addEventListener('click', () => run({ auto: false }))
   return trial
 }

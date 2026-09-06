@@ -2,6 +2,7 @@ import { esc, nodesById, openPage } from './util.js'
 import { buildWorld } from './world.js'
 import { makeSound } from './sound.js'
 import { wireHud } from './hud.js'
+import { makeWalk } from './walk.js'
 
 // wiki-plugin-hear — walk a page-level GMap as a street and hear its pages speak.
 //
@@ -73,6 +74,8 @@ const ensureStyle = () => {
 .hear-hud label{font-size:11px;color:#b8c4cf;display:flex;align-items:center;gap:4px;background:rgba(20,27,36,.9);padding:3px 6px;border-radius:5px}
 .hear-hud input[type=range]{width:64px}
 .hear-hud .hear-pad{display:inline-flex;gap:2px;margin-left:auto}
+.hear-hud button.hear-close{font-weight:600;padding:4px 9px}
+.hear-panel .hear-panel-close{float:right;font-size:12px;line-height:1;padding:2px 6px;border-radius:4px;border:1px solid #3a4652;background:#1a2330;color:#e8eef4;cursor:pointer;margin:-2px -4px 0 6px}
 .hear-hud .hear-pad button{padding:4px 7px;user-select:none;-webkit-user-select:none;touch-action:none}
 .hear-hud .hear-pad button.on{background:#e0a44f;color:#1a1208}
 .hear-shell:fullscreen{width:100vw;height:100vh!important;border-radius:0}
@@ -127,12 +130,15 @@ const shellHtml = spec => `
     <label>synthetic <input type="range" data-bus="synthetic_speech" min="0" max="100" value="100"></label>
     <select data-act="solo"><option value="">Solo a house…</option></select>
     <button data-act="above" title="Back above the street">Above</button>
+    <button data-act="walk" title="Be carried round the street: each house speaks its clause from the top when you arrive">Walk</button>
+    <button data-act="next" title="On to the next house">Next</button>
     <button data-act="trial" title="The One Audible Street questions: four short tasks, results you can copy">Listening trial</button>
     <button data-act="full" title="Full screen (F); Esc leaves">Full screen</button>
     <span class="hear-pad" title="Walk: hold a key, or W A S D on the keyboard"><button data-key="a">◀</button><button data-key="w">▲</button><button data-key="s">▼</button><button data-key="d">▶</button><button data-key="q">↑</button><button data-key="e">↓</button></span>
+    <button data-act="close" class="hear-close" title="Close: back to the beginning, silent, the gate up">✕ Close</button>
   </div>
   <div class="hear-trial" hidden></div>
-  <div class="hear-hint" hidden>drag to look · W A S D to walk · Q E up down · click a house</div>
+  <div class="hear-hint" hidden>drag to look · W A S D to walk · Q E up down · click a house · Walk to be carried</div>
   <div class="hear-status" hidden></div>
   <div class="hear-panel" hidden></div>
   <div class="hear-gate">
@@ -226,15 +232,17 @@ async function start (root, spec, div) {
   }
   const world = buildWorld(three, root, map, speakers, squareId)
   const sound = makeSound(three, world, speakers, policy, root, chainFactory)
-  wireHud(root, world, sound, speakers, map, div)
-  setStatus(root, `${map.nodes.length} pages · ${map.regions.length} regions · ${speakers.length} voices · policy ${policyRaw?.policy_id || 'default'}`)
+  const walk = makeWalk(world, sound, speakers, map)
+  wireHud(root, world, sound, speakers, map, div, walk)
+  root._hearBaseStatus = `${map.nodes.length} pages · ${map.regions.length} regions · ${speakers.length} voices · policy ${policyRaw?.policy_id || 'default'}`
+  setStatus(root, root._hearBaseStatus)
 
   root.querySelector('[data-act="enter"]').addEventListener('click', async () => {
-    await sound.enable()
+    await sound.enable()   // after a Close this only lifts the hold
     closeGate(root)
   })
-  root.querySelector('[data-act="quiet"]').addEventListener('click', () => closeGate(root))
-  root._hear = { world, sound, speakers, policy, dispose: () => { world.dispose(); sound.dispose() } }
+  root.querySelector('[data-act="quiet"]').addEventListener('click', () => { if (sound.enabled) sound.silence(); closeGate(root) })
+  root._hear = { world, sound, walk, speakers, policy, dispose: () => { walk.dispose(); world.dispose(); sound.dispose() } }
 }
 
 const closeGate = root => {

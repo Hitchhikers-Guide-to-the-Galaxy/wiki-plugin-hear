@@ -8,6 +8,8 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
   const buses = {}
   const emitters = new Map()   // id -> emitter
   let focusId = null, insideId = null
+  let held = false                       // Close: everything quiet, the context kept for the next Enter
+  let listenId = null, listenResolve = null   // the house being listened to from the top, and the promise that settles when its clause ends
   const W = policy.selection_weights
   const fadeMs = policy.crossfade_ms
   const dwellMs = policy.hysteresis.min_dwell_ms
@@ -54,7 +56,7 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
   const live = () => [...emitters.values()].filter(e => e.pa).length
 
   const enable = async () => {
-    if (enabled) return
+    if (enabled) { held = false; return }
     listener = new three.AudioListener()
     camera.add(listener)
     ctx = listener.context
@@ -131,12 +133,14 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     if (!enabled) return
     if (!root.isConnected) { root._hear?.dispose?.(); return }
     const now = performance.now()
-    if (paused || muted) return
+    if (paused || muted || held) return
     lod = lodOf()
     const all = [...emitters.values()]
     for (const e of all) e.score = score(e)
     for (const e of all) if (e.chain?.update && e.pa) { try { e.chain.update({ distance: distance(e), facing: facing(e), intelligible: e.intelligible, active: e.active, lod, score: e.score, focused: focusId === e.s.id }) } catch {} }
-    for (const e of all) if (!e.active && e.pa && now - e.idleSince > 20000 && live() > MAX_NODES) teardown(e)
+    for (const e of all) if (!e.active && e.pa && now - e.idleSince > 20000 && now - (e.primed || 0) > 20000 && e.s.id !== listenId && live() > MAX_NODES) teardown(e)
+    // the listened house keeps playing whatever paused its element (a background tab, a stray pause): the clause is the walker's clock
+    if (listenId) { const e = emitters.get(listenId); if (e?.el && e.active && e.el.paused && !e.el.ended && e.el.readyState >= 2) e.el.play().catch(() => {}) }
     if (insideId) {
       for (const e of all) {
         const on = e.s.id === insideId
@@ -172,12 +176,71 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     sound.onTick?.(byScore.map(e => ({ id: e.s.id, title: e.s.title, score: e.score, intelligible: e.intelligible })), lod, live())
   }
 
+  const wait = ms => new Promise(r => setTimeout(r, ms))
+  // settle the current listen: the element loops again and, if the clause ended while the house is still active, plays on as the crowd does
+  const endListen = ended => {
+    if (!listenId) return
+    const e = emitters.get(listenId); listenId = null
+    if (e?.el) {
+      e.el.loop = true
+      if (e._onEnded) { e.el.removeEventListener('ended', e._onEnded); e._onEnded = null }
+      if (ended && e.active && !paused) e.el.play().catch(() => {})
+    }
+    const r = listenResolve; listenResolve = null; r?.(ended)
+  }
+  // seek to the top: before metadata the browser honours it as the start position; after, wait for the seek (or a beat)
+  const seekStart = el => new Promise(resolve => {
+    let done = false; const fin = () => { if (!done) { done = true; el.removeEventListener('seeked', fin); resolve() } }
+    if (el.readyState >= 1) { el.addEventListener('seeked', fin); try { el.currentTime = 0 } catch {}; setTimeout(fin, 300) } else {
+      el.addEventListener('loadedmetadata', () => { try { el.currentTime = 0 } catch {}; fin() }, { once: true })
+      el.preload = 'auto'; el.load()
+      setTimeout(fin, 2500)
+    }
+  })
+  // prime a house you are walking towards: build its graph and fetch the clip, so arrival does not wait on the network
+  const prime = id => { const e = emitters.get(id); if (!e || !enabled) return; build(e); e.primed = performance.now(); if (e.el.readyState < 1) { e.el.preload = 'auto'; e.el.load() } }
+  // the timing rule: a house starts its clause from the top the moment it is listened to — dip, seek, open, fade —
+  // and does not loop while listened to, so the end of the clause is an event the walker can wait for
+  const listen = async id => {
+    const e = emitters.get(id)
+    if (!e || !enabled) return false
+    endListen(false)
+    held = false
+    build(e)
+    const now = performance.now()
+    listenId = id; focusId = id
+    e.active = true; e.started = true; e.since = now; e.target = 1; e.el.loop = false   // active before the dip, so frame() neither activates it at a random offset nor ducks it
+    ramp(e.gain.gain, 0, 120)
+    await wait(130)
+    if (listenId !== id) return false
+    await seekStart(e.el)
+    if (listenId !== id) return false
+    e.el.play().catch(() => {})
+    ramp(e.gain.gain, muted ? 0 : 1, fadeMs); setIntelligible(e, true)
+    return new Promise(resolve => {
+      listenResolve = resolve
+      e._onEnded = () => { if (listenId === id) endListen(true) }
+      e.el.addEventListener('ended', e._onEnded)
+    })
+  }
+  // Close: every voice fades out and the frame loop holds; the graphs and the context stay for the next Enter
+  const silence = () => {
+    endListen(false); focusId = null; insideId = null
+    const now = performance.now()
+    for (const e of emitters.values()) if (e.active) deactivate(e, now)
+    held = true
+  }
+
   const sound = {
-    enable, emitters, buses, policy,
+    enable, emitters, buses, policy, listen, silence, prime,
+    resume () { held = false },
+    get held () { return held },
+    get paused () { return paused },
+    get listening () { return listenId },
     get enabled () { return enabled },
     onTick: null,
-    focus (id) { focusId = id },
-    enter (id) { insideId = id; focusId = id },
+    focus (id) { if (id !== listenId) endListen(false); focusId = id },
+    enter (id) { endListen(false); insideId = id; focusId = id },
     leave () { insideId = null },
     mute (on) { muted = on; for (const b of Object.values(buses)) ramp(b.gain, on ? 0 : 1, 200) },
     pause (on) { paused = on; for (const e of emitters.values()) { if (!e.el) continue; if (on) e.el.pause(); else if (e.active) e.el.play().catch(() => {}) } },

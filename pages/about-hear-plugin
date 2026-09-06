@@ -1,53 +1,64 @@
 {
- "title": "About Hear Plugin",
- "story": [
-  {
-   "type": "markdown",
-   "id": "ba9751a5511afdbf",
-   "text": "The **Hear** plugin walks a page-level GMap as a street and lets its pages speak: positional audio under a versioned soundscape policy, a deadband and an equal-power crossfade so voices do not flicker, a consent gate before anything sounds, and a transcript and provenance card for every voice. Built by Phase 3 of the Hear Crowds Plan on atlas.anarchive.earth."
-  },
-  {
-   "type": "hear",
-   "id": "36944e2bc3d2768e",
-   "text": "MAP https://atlas.anarchive.earth/assets/hear-crowds-demo/map.json\nMEDIA https://atlas.anarchive.earth/assets/hear-crowds-demo/street-media.json\nPOLICY https://atlas.anarchive.earth/assets/hear-crowds-demo/soundscape-policy.json\nSTREET clause.legalcommons.org/right-to-amparo\nHEIGHT 520\nRight to Amparo and its sixteen houses, speaking."
-  },
-  {
-   "type": "markdown",
-   "id": "a7e1b8e9d6e34ef6",
-   "text": "# Commands\n\nOne per line, UPPERCASE first word. Anything else is the caption."
-  },
-  {
-   "type": "markdown",
-   "id": "cd4c1040c3c51e52",
-   "text": "- `MAP url` \u2014 the map.json a page-level GMap writes: positions, regions, edges, the street\n- `MEDIA url` \u2014 the street-media.json index: which houses speak and where their clips and manifests are\n- `POLICY url` \u2014 the soundscape-policy.json: emitter budget, intelligible limit, ducking, crossfade, deadband, dwell, weights\n- `STREET site/slug` \u2014 the square; defaults to the map's own street\n- `HEIGHT px` \u2014 the height of the place, 240 or more"
-  },
-  {
-   "type": "markdown",
-   "id": "73838ab426fb0a98",
-   "text": "# How it sounds\n\nNothing plays before Enter the soundscape. Then a listener rides the camera and only the policy's budget of houses emit, ranked by proximity, focus and view direction. A house outside the intelligible limit murmurs through a low-pass filter. A challenger must beat the weakest voice by the deadband, and that voice must have dwelt at least the minimum before it gives way; every change is an equal-power crossfade. Click a house to stand at its threshold and read along; go inside for the page, its audio and its provenance; open the source page in the wiki from either. Without WebGL the street is a list of houses with players.\n\n# Controls\n\nDrag to look; W A S D walk, Q E up and down, or hold the arrow pad; F or the Full screen button fills the display, Esc leaves; Mute silences every bus, Pause voices stops the clips and keeps the place; Listening trial runs the One Audible Street questions."
-  },
-  {
-   "type": "markdown",
-   "id": "b2f76b345af24588",
-   "text": "## Repositories\n\n- GitHub: [Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear](https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear)\n- npm: [wiki-plugin-hear](https://www.npmjs.com/package/wiki-plugin-hear)\n- Built by the Hear Crowds Plan on [atlas.anarchive.earth](https://atlas.anarchive.earth/view/hear-crowds-plan); the live place is [Hear Crowds Demo](https://atlas.anarchive.earth/view/hear-crowds-demo)"
-  }
- ],
- "journal": [
-  {
-   "type": "create",
-   "item": {
-    "title": "About Hear Plugin",
-    "story": [
-     {
+  "title": "About Hear Plugin",
+  "story": [
+    {
       "type": "markdown",
       "id": "ba9751a5511afdbf",
       "text": "The **Hear** plugin walks a page-level GMap as a street and lets its pages speak: positional audio under a versioned soundscape policy, a deadband and an equal-power crossfade so voices do not flicker, a consent gate before anything sounds, and a transcript and provenance card for every voice. Built by Phase 3 of the Hear Crowds Plan on atlas.anarchive.earth."
-     }
-    ]
-   },
-   "date": 1788637241643,
-   "provenance": "Authored by an AI agent \u2014 Claude Code via the [[fedwiki-create-plugin]] skill, Hear Crowds Plan Phase 3. [https://claude.com/claude-code Claude Code]"
-  }
- ],
- "plugin": "hear"
+    },
+    {
+      "type": "hear",
+      "id": "36944e2bc3d2768e",
+      "text": "MAP https://atlas.anarchive.earth/assets/hear-crowds-demo/map.json\nMEDIA https://atlas.anarchive.earth/assets/hear-crowds-demo/street-media.json\nPOLICY https://atlas.anarchive.earth/assets/hear-crowds-demo/soundscape-policy.json\nSTREET clause.legalcommons.org/right-to-amparo\nHEIGHT 520\nRight to Amparo and its sixteen houses, speaking."
+    },
+    {
+      "type": "markdown",
+      "id": "a7e1b8e9d6e34ef6",
+      "text": "# Commands\n\nOne per line, UPPERCASE first word. Anything else is the caption."
+    },
+    {
+      "type": "markdown",
+      "id": "cd4c1040c3c51e52",
+      "text": "- `MAP url` \u2014 the map.json a page-level GMap writes: positions, regions, edges, the street\n- `MEDIA url` \u2014 the street-media.json index: which houses speak and where their clips and manifests are\n- `POLICY url` \u2014 the soundscape-policy.json: emitter budget, intelligible limit, ducking, crossfade, deadband, dwell, weights\n- `STREET site/slug` \u2014 the square; defaults to the map's own street\n- `HEIGHT px` \u2014 the height of the place, 240 or more"
+    },
+    {
+      "type": "markdown",
+      "id": "73838ab426fb0a98",
+      "text": "# How it sounds\n\nNothing plays before Enter the soundscape. Then a listener rides the camera and only the policy's budget of houses emit, ranked by proximity, focus and view direction. A house outside the intelligible limit murmurs through a low-pass filter. A challenger must beat the weakest voice by the deadband, and that voice must have dwelt at least the minimum before it gives way; every change is an equal-power crossfade. Click a house, or pick one from Solo, to stand at its threshold: the house starts its clause from the top the moment you arrive, the transcript follows from its first line, and it stops looping while you listen so the end of the clause is an event. Walk carries you round the street by way of the square, house to house, each clause from the top on arrival and a beat after it ends; Next skips on; any walking key hands the place back to you. Close returns everything to the beginning: silent, above the square, the gate up. Read along at the threshold; go inside for the page, its audio and its provenance; open the source page in the wiki from either. Without WebGL the street is a list of houses with players.\n\n# Controls\n\nDrag to look; W A S D walk, Q E up and down, or hold the arrow pad; F or the Full screen button fills the display, Esc leaves; Mute silences every bus, Pause voices stops the clips and keeps the place; Listening trial runs the One Audible Street questions."
+    },
+    {
+      "type": "markdown",
+      "id": "b2f76b345af24588",
+      "text": "## Repositories\n\n- GitHub: [Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear](https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear)\n- npm: [wiki-plugin-hear](https://www.npmjs.com/package/wiki-plugin-hear)\n- Built by the Hear Crowds Plan on [atlas.anarchive.earth](https://atlas.anarchive.earth/view/hear-crowds-plan); the live place is [Hear Crowds Demo](https://atlas.anarchive.earth/view/hear-crowds-demo)"
+    }
+  ],
+  "journal": [
+    {
+      "type": "create",
+      "item": {
+        "title": "About Hear Plugin",
+        "story": [
+          {
+            "type": "markdown",
+            "id": "ba9751a5511afdbf",
+            "text": "The **Hear** plugin walks a page-level GMap as a street and lets its pages speak: positional audio under a versioned soundscape policy, a deadband and an equal-power crossfade so voices do not flicker, a consent gate before anything sounds, and a transcript and provenance card for every voice. Built by Phase 3 of the Hear Crowds Plan on atlas.anarchive.earth."
+          }
+        ]
+      },
+      "date": 1788637241643,
+      "provenance": "Authored by an AI agent \u2014 Claude Code via the [[fedwiki-create-plugin]] skill, Hear Crowds Plan Phase 3. [https://claude.com/claude-code Claude Code]"
+    },
+    {
+      "type": "edit",
+      "id": "73838ab426fb0a98",
+      "item": {
+        "type": "markdown",
+        "id": "73838ab426fb0a98",
+        "text": "# How it sounds\n\nNothing plays before Enter the soundscape. Then a listener rides the camera and only the policy's budget of houses emit, ranked by proximity, focus and view direction. A house outside the intelligible limit murmurs through a low-pass filter. A challenger must beat the weakest voice by the deadband, and that voice must have dwelt at least the minimum before it gives way; every change is an equal-power crossfade. Click a house, or pick one from Solo, to stand at its threshold: the house starts its clause from the top the moment you arrive, the transcript follows from its first line, and it stops looping while you listen so the end of the clause is an event. Walk carries you round the street by way of the square, house to house, each clause from the top on arrival and a beat after it ends; Next skips on; any walking key hands the place back to you. Close returns everything to the beginning: silent, above the square, the gate up. Read along at the threshold; go inside for the page, its audio and its provenance; open the source page in the wiki from either. Without WebGL the street is a list of houses with players.\n\n# Controls\n\nDrag to look; W A S D walk, Q E up and down, or hold the arrow pad; F or the Full screen button fills the display, Esc leaves; Mute silences every bus, Pause voices stops the clips and keeps the place; Listening trial runs the One Audible Street questions."
+      },
+      "date": 1788699451557,
+      "provenance": "wiki-plugin-hear 0.7.0: Walk, Close, from the top"
+    }
+  ],
+  "plugin": "hear"
 }
