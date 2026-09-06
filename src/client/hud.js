@@ -58,7 +58,42 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
     bFly.addEventListener('click', () => { if (flight.state.on) flight.stop(); else { walk.stop(); flight.start() } })
     flight.onZone = (z, i) => { bFly.classList.add('on'); bFly.textContent = `Zone ${i + 1}: ${z.mix}${z.languages?.length ? ' ' + z.languages.join(' ') : ''}`; mixSel.value = mixValue(); panel.hidden = true }
     flight.onArrive = s => showPanel(s)
-    flight.onStop = () => { bFly.classList.remove('on'); bFly.textContent = 'Fly' }
+    flight.onStop = () => { bFly.classList.remove('on'); bFly.textContent = 'Fly'; if (quiz.on) finishQuiz() }
+    // the multilingual listening trial: Fly with questions — after each zone, which languages did you hear, and did it feel like one place
+    const bQuiz = document.createElement('button'); bQuiz.dataset.act = 'flytrial'; bQuiz.title = 'Fly the journey and answer two questions after each zone'; bQuiz.textContent = 'Fly + questions'
+    bFly.after(bQuiz)
+    const tbox = root.querySelector('.hear-trial')
+    const NAMES2 = { es: 'Spanish', ar: 'Arabic', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', en: 'English' }
+    const quiz = { on: false, answers: [], listener: '' }
+    const askZone = (z, i, rec) => new Promise(resolve => {
+      const langs = [...new Set([...sound.languages().keys()])].sort()
+      const picked = new Set()
+      tbox.hidden = false
+      tbox.innerHTML = `<h4>Zone ${i + 1} of ${flight.zones.length}: ${esc(z.name)}</h4><div class="hear-q">Which languages did you hear? (tap all that apply)</div><div class="hear-opts">${langs.map(l => `<button data-l="${esc(l)}">${esc(NAMES2[l] || l)}</button>`).join('')}</div><div class="hear-q" style="margin-top:8px">Did that zone feel like one place, a quarter of the city?</div><div class="hear-opts"><button data-p="yes">Yes, one place</button><button data-p="mixed">Mixed</button><button data-p="no">No, scattered</button></div>`
+      tbox.querySelectorAll('button[data-l]').forEach(b => b.addEventListener('click', () => { const l = b.dataset.l; if (picked.has(l)) { picked.delete(l); b.classList.remove('on') } else { picked.add(l); b.classList.add('on') } }))
+      tbox.querySelectorAll('button[data-p]').forEach(b => b.addEventListener('click', () => {
+        const truth = Object.keys(rec?.heard || {}).sort()
+        quiz.answers.push({ zone: i + 1, name: z.name, mix: z.mix, languages_set: z.languages, heard_by_machine: truth, named: [...picked].sort(), correct: [...picked].sort().join(',') === truth.join(','), place: b.dataset.p })
+        tbox.hidden = true; resolve()
+      }))
+    })
+    const finishQuiz = () => {
+      quiz.on = false; flight.onZoneEnd = null
+      const result = { listener: quiz.listener || 'listener', kind: 'multilingual flight trial', started: quiz.started, finished: new Date().toISOString(), policy_id: sound.policy.policy_id || 'default', journey: flight.zones.length, zones: quiz.answers,
+        summary: { zones_named_correctly: quiz.answers.filter(a => a.correct).length + ' of ' + quiz.answers.length, pure_zones_read_as_place: quiz.answers.filter(a => a.mix === 'solo' && a.place === 'yes').length + ' of ' + quiz.answers.filter(a => a.mix === 'solo').length } }
+      try { const all = JSON.parse(localStorage.getItem('hear-flight-trials') || '[]'); all.push(result); localStorage.setItem('hear-flight-trials', JSON.stringify(all.slice(-20))) } catch {}
+      tbox.hidden = false
+      tbox.innerHTML = `<h4>Your flight</h4><div class="hear-q">Zones named correctly: ${result.summary.zones_named_correctly}. Pure zones that felt like one place: ${result.summary.pure_zones_read_as_place}.<br>Copy the record onto the Multilingual Listening Trial page.</div><pre>${esc(JSON.stringify(result))}</pre><div class="hear-opts"><button data-act="copy" class="primary">Copy JSON</button><button data-act="close">Close</button></div>`
+      tbox.querySelector('[data-act="copy"]').addEventListener('click', () => navigator.clipboard?.writeText(JSON.stringify(result)))
+      tbox.querySelector('[data-act="close"]').addEventListener('click', () => { tbox.hidden = true })
+      root._hearFlightTrial = result
+    }
+    bQuiz.addEventListener('click', () => {
+      if (!sound.enabled) { tbox.hidden = false; tbox.innerHTML = '<h4>Fly + questions</h4><div class="hear-q">Enter the soundscape first: the questions are about what you hear.</div><div class="hear-opts"><button data-act="close">OK</button></div>'; tbox.querySelector('[data-act="close"]').addEventListener('click', () => { tbox.hidden = true }); return }
+      if (flight.state.on) { flight.stop(); return }
+      quiz.on = true; quiz.answers = []; quiz.started = new Date().toISOString(); flight.onZoneEnd = askZone
+      walk.stop(); flight.start()
+    })
   }
 
   const manifests = new Map()

@@ -209,7 +209,8 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
       const duck = focusId && focusId !== e.s.id ? dbToGain(policy.focus_duck_db) : 1
       if (e.active && e.target !== duck) { e.target = duck; ramp(e.gain.gain, duck, fadeMs) }
     }
-    sound.onTick?.(byScore.map(e => ({ id: e.s.id, title: e.s.title, score: e.score, intelligible: e.intelligible, language: spokenOf(e) })), lod, live())
+    sound.lastTick = byScore.map(e => ({ id: e.s.id, title: e.s.title, score: e.score, intelligible: e.intelligible, language: spokenOf(e) }))
+    sound.onTick?.(sound.lastTick, lod, live())
   }
 
   const wait = ms => new Promise(r => setTimeout(r, ms))

@@ -18,8 +18,16 @@ export function makeJourney (world, sound, speakers, map, journey) {
   const S = probe.x - vx - vw / 2 !== 0 ? px / (probe.x - vx - vw / 2) : 1
   const toWorld = (x, y) => [(x - vx - vw / 2) * S, -((y - vy - vh / 2) * S)]
   const state = { on: false, zone: -1, zoneName: '', remaining: 0, mix: null }
-  const flight = { state, onZone: null, onStop: null, zones: journey?.zones || [] }
-  let sawFrame = false, pump = 0, hooked = false, leg = null
+  const flight = { state, onZone: null, onZoneEnd: null, onStop: null, zones: journey?.zones || [], log: [] }
+  let sawFrame = false, pump = 0, hooked = false, leg = null, sampler = 0
+  // the zone log: what was intelligible, in which language, while the listener was in each zone — the machine's answer
+  // to the trial's first question, and the record a human listener copies with theirs
+  const sample = () => {
+    if (!state.on || state.zone < 0 || !sound.enabled) return
+    const z = flight.log[state.zone]; if (!z) return
+    const tick = sound.lastTick || []
+    for (const x of tick) { if (x.intelligible) { z.heard[x.language || 'en'] = (z.heard[x.language || 'en'] || 0) + 1; z.houses.add(x.title) } }
+  }
 
   const hook = () => {
     if (!hooked) { hooked = true; const prev = world.onFrame; world.onFrame = dt => { sawFrame = true; prev?.(dt); step(dt) } }
@@ -53,8 +61,14 @@ export function makeJourney (world, sound, speakers, map, journey) {
       if (s) { world.threshold(s.id); if (sound.enabled) sound.listen(s.id).then(() => { if (state.on) stop() }); flight.onArrive?.(s) } else stop()
       return
     }
-    // hold in the zone for its remaining seconds, then move on
-    setTimeout(() => { if (state.on && state.zone < flight.zones.length - 1) next(); else if (state.on) stop() }, Math.max(1000, z.seconds * 400))
+    // hold in the zone for its remaining seconds; then, if the HUD asks questions, wait for the answers before moving on
+    setTimeout(async () => {
+      if (!state.on) return
+      const rec = flight.log[state.zone]; if (rec) rec.houses = [...rec.houses]
+      if (flight.onZoneEnd) { try { await flight.onZoneEnd(z, state.zone, rec) } catch {} }
+      if (!state.on) return
+      if (state.zone < flight.zones.length - 1) next(); else stop()
+    }, Math.max(1000, z.seconds * 400))
   }
   const next = () => {
     state.zone += 1
@@ -62,6 +76,7 @@ export function makeJourney (world, sound, speakers, map, journey) {
     if (!z) { stop(); return }
     state.zoneName = z.name; state.mix = { mode: z.mix, languages: z.languages || [] }
     sound.setMix?.(z.mix, z.languages || [])
+    flight.log[state.zone] = { zone: state.zone + 1, name: z.name, mix: z.mix, languages: z.languages || [], seconds: z.seconds, heard: {}, houses: new Set(), started: new Date().toISOString() }
     const [wx, wz] = z.descend && speakers.find(x => x.slug === z.descend)
       ? (() => { const s = speakers.find(x => x.slug === z.descend); const [hx, hz] = world.nodePos.get(s.id); return [hx, hz] })()
       : toWorld(z.at[0], z.at[1])
@@ -72,11 +87,13 @@ export function makeJourney (world, sound, speakers, map, journey) {
   }
   const start = () => {
     if (state.on || !flight.zones.length) return
-    state.on = true; state.zone = -1; hook(); next()
+    state.on = true; state.zone = -1; flight.log = []; hook(); next()
+    clearInterval(sampler); sampler = setInterval(sample, 500)
   }
   const stop = () => {
     if (!state.on) return
-    state.on = false; leg = null; state.remaining = 0; clearInterval(pump)
+    state.on = false; leg = null; state.remaining = 0; clearInterval(pump); clearInterval(sampler)
+    for (const r of flight.log) if (r && r.houses instanceof Set) r.houses = [...r.houses]
     flight.onStop?.()
   }
   Object.assign(flight, { start, stop, next, dispose () { stop() } })
