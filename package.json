@@ -1,0 +1,29 @@
+{
+  "name": "wiki-plugin-hear",
+  "version": "0.5.0",
+  "description": "Federated Wiki plugin: walk a page-level GMap as a street and hear its pages speak — positional audio under a versioned soundscape policy, with transcripts and provenance one click away.",
+  "type": "module",
+  "main": "client/hear.js",
+  "files": [
+    "client",
+    "pages",
+    "factory.json"
+  ],
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "author": "David Bovill",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear/issues"
+  },
+  "homepage": "https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-hear#readme"
+}
