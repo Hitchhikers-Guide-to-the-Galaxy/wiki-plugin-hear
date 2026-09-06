@@ -3,6 +3,7 @@ import { buildWorld } from './world.js'
 import { makeSound } from './sound.js'
 import { wireHud } from './hud.js'
 import { makeWalk } from './walk.js'
+import { makeJourney } from './journey.js'
 
 // wiki-plugin-hear — walk a page-level GMap as a street and hear its pages speak.
 //
@@ -13,6 +14,8 @@ import { makeWalk } from './walk.js'
 //   STREET clause.legalcommons.org/right-to-amparo   the square (defaults to map.street.square)
 //   HEIGHT 520                                 pixels
 //   MODULE https://…/voice-chain.js           an ES module exporting createVoiceChain(ctx, voice, policy): per-voice DSP between the murmur filter and the bus
+//   MIX    solo es | pair es pt | polyphonic | native   which languages sound (Multilingual Mixes; overrides the policy)
+//   JOURNEY https://…/journey.json           a cue sheet of language zones: the Fly button carries you through them
 //
 // Geometry is built from map.json in code: regions extruded, houses as instanced
 // boxes sized by story length, the square a plaza, roads from the edges.  No
@@ -26,7 +29,7 @@ let stylesInjected = false
 
 // ------------------------------------------------------------------ DSL
 export const parseText = text => {
-  const spec = { map: '', media: '', policy: '', street: '', module: '', height: 520, caption: [] }
+  const spec = { map: '', media: '', policy: '', street: '', module: '', journey: '', mix: null, height: 520, caption: [] }
   for (const raw of (text || '').split('\n')) {
     const line = raw.trim()
     if (!line) continue
@@ -38,6 +41,8 @@ export const parseText = text => {
     else if (cmd === 'POLICY') spec.policy = val
     else if (cmd === 'STREET') spec.street = val
     else if (cmd === 'MODULE') spec.module = val
+    else if (cmd === 'JOURNEY') spec.journey = val
+    else if (cmd === 'MIX') { const [mode, ...langs] = val.split(/\s+/); spec.mix = { mode: mode.toLowerCase(), languages: langs.map(l => l.toLowerCase()) } }
     else if (cmd === 'HEIGHT') spec.height = Math.max(240, parseInt(val, 10) || 520)
     else spec.caption.push(line)
   }
@@ -48,7 +53,8 @@ const DEFAULT_POLICY = {
   max_active_emitters: 8, max_intelligible_speech: 2, focus_duck_db: -14, crossfade_ms: 900,
   hysteresis: { deadband: 0.08, min_dwell_ms: 900 },
   selection_weights: { proximity: 0.4, explicit_focus: 0.25, journey_relevance: 0.15, view_direction: 0.1, semantic_relevance: 0.1 },
-  buses: ['human_speech', 'synthetic_speech', 'ambience', 'ui']
+  buses: ['human_speech', 'synthetic_speech', 'ambience', 'ui'],
+  mix: 'native', languages: [], per_language_intelligible: 1
 }
 
 
@@ -129,6 +135,8 @@ const shellHtml = spec => `
     <label>human <input type="range" data-bus="human_speech" min="0" max="100" value="100"></label>
     <label>synthetic <input type="range" data-bus="synthetic_speech" min="0" max="100" value="100"></label>
     <select data-act="solo"><option value="">Solo a house…</option></select>
+    <select data-act="mix" title="The mix: which languages sound"><option value="native">Mix: native</option></select>
+    <button data-act="fly" hidden title="Fly the language zones of the journey">Fly</button>
     <button data-act="above" title="Back above the street">Above</button>
     <button data-act="walk" title="Be carried round the street: each house speaks its clause from the top when you arrive">Walk</button>
     <button data-act="next" title="On to the next house">Next</button>
@@ -201,15 +209,17 @@ const webglAvailable = () => {
 async function start (root, spec, div) {
   if (!spec.map) { setStatus(root, 'Give a MAP line: the URL of a map.json.'); return }
   setStatus(root, 'Loading the map…')
-  const [map, media, policyRaw] = await Promise.all([
+  const [map, media, policyRaw, journey] = await Promise.all([
     fetchJson(spec.map),
     spec.media ? fetchJson(spec.media).catch(() => null) : null,
-    spec.policy ? fetchJson(spec.policy).catch(() => null) : null
+    spec.policy ? fetchJson(spec.policy).catch(() => null) : null,
+    spec.journey ? fetchJson(spec.journey).catch(() => null) : null
   ])
   const policy = Object.assign({}, DEFAULT_POLICY, policyRaw || {})
   policy.hysteresis = Object.assign({}, DEFAULT_POLICY.hysteresis, policy.hysteresis || {})
   policy.selection_weights = Object.assign({}, DEFAULT_POLICY.selection_weights, policy.selection_weights || {})
   if (policy.hysteresis.min_dwell_ms < policy.crossfade_ms) policy.hysteresis.min_dwell_ms = policy.crossfade_ms
+  if (spec.mix) { policy.mix = spec.mix.mode; policy.languages = spec.mix.languages }   // the item's MIX line beats the policy file
 
   const squareId = spec.street || map.street?.square || ''
   const nodesById = new Map(map.nodes.map(n => [n.id, n]))
@@ -233,8 +243,10 @@ async function start (root, spec, div) {
   const world = buildWorld(three, root, map, speakers, squareId)
   const sound = makeSound(three, world, speakers, policy, root, chainFactory)
   const walk = makeWalk(world, sound, speakers, map)
-  wireHud(root, world, sound, speakers, map, div, walk)
-  root._hearBaseStatus = `${map.nodes.length} pages · ${map.regions.length} regions · ${speakers.length} voices · policy ${policyRaw?.policy_id || 'default'}`
+  const flight = journey ? makeJourney(world, sound, speakers, map, journey) : null
+  wireHud(root, world, sound, speakers, map, div, walk, flight)
+  const natives = speakers.filter(s => s.native).length
+  root._hearBaseStatus = `${map.nodes.length} pages · ${map.regions.length} regions · ${speakers.length} voices, ${natives} in their own language · policy ${policyRaw?.policy_id || 'default'} · mix ${policy.mix}${policy.languages?.length ? ' ' + policy.languages.join(' ') : ''}`
   setStatus(root, root._hearBaseStatus)
 
   root.querySelector('[data-act="enter"]').addEventListener('click', async () => {
@@ -242,7 +254,7 @@ async function start (root, spec, div) {
     closeGate(root)
   })
   root.querySelector('[data-act="quiet"]').addEventListener('click', () => { if (sound.enabled) sound.silence(); closeGate(root) })
-  root._hear = { world, sound, walk, speakers, policy, dispose: () => { walk.dispose(); world.dispose(); sound.dispose() } }
+  root._hear = { world, sound, walk, flight, speakers, policy, dispose: () => { flight?.dispose(); walk.dispose(); world.dispose(); sound.dispose() } }
 }
 
 const closeGate = root => {

@@ -2,7 +2,7 @@
 import { esc, short, openPage } from './util.js'
 
 // ------------------------------------------------------------------ HUD, panel, interior
-export function wireHud (root, world, sound, speakers, map, div, walk) {
+export function wireHud (root, world, sound, speakers, map, div, walk, flight = null) {
   const hud = root.querySelector('.hear-hud')
   const panel = root.querySelector('.hear-panel')
   const solo = hud.querySelector('[data-act="solo"]')
@@ -27,7 +27,7 @@ export function wireHud (root, world, sound, speakers, map, div, walk) {
   walk.onStop = () => { bWalk.classList.remove('on'); bWalk.textContent = 'Walk' }
   // Close: back to the beginning state — outside, silent, the gate up; the voices and the place are kept for the next Enter
   const reset = () => {
-    walk.stop(); root._hearTrial?.abort?.()
+    walk.stop(); flight?.stop(); root._hearTrial?.abort?.()
     root.querySelector('.hear-inside')?.remove(); sound.leave()
     panel.hidden = true; clearInterval(cueTimer)
     if (sound.enabled) sound.silence()
@@ -39,6 +39,27 @@ export function wireHud (root, world, sound, speakers, map, div, walk) {
   }
   hud.querySelector('[data-act="close"]').addEventListener('click', reset)
   solo.addEventListener('change', () => { if (solo.value) goTo(solo.value) })
+  // the mix selector: native, polyphonic, a solo per language the city can speak, and pairs of the two most spoken
+  const mixSel = hud.querySelector('[data-act="mix"]')
+  const langs = [...sound.languages().entries()].filter(([l]) => l !== 'en').sort((a, b) => b[1] - a[1])
+  const NAMES = { es: 'Spanish', ar: 'Arabic', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ja: 'Japanese', zh: 'Chinese' }
+  const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; mixSel.appendChild(o) }
+  opt('polyphonic', 'Mix: polyphonic, every language')
+  for (const [l, n] of langs) opt(`solo ${l}`, `Mix: ${NAMES[l] || l} only (${n})`)
+  for (let i = 0; i < langs.length; i++) for (let j = i + 1; j < Math.min(langs.length, 3); j++) opt(`pair ${langs[i][0]} ${langs[j][0]}`, `Mix: ${NAMES[langs[i][0]] || langs[i][0]} with ${NAMES[langs[j][0]] || langs[j][0]}`)
+  const mixValue = () => { const m = sound.mix; return m.mode === 'native' ? 'native' : m.mode === 'polyphonic' ? 'polyphonic' : `${m.mode} ${m.languages.join(' ')}` }
+  if (![...mixSel.options].some(o => o.value === mixValue())) opt(mixValue(), `Mix: ${mixValue()}`)
+  mixSel.value = mixValue()
+  mixSel.addEventListener('change', () => { const [mode, ...ls] = mixSel.value.split(' '); sound.setMix(mode, ls); flight?.stop() })
+  // Fly: the journey's language zones, if the item gave one
+  const bFly = hud.querySelector('[data-act="fly"]')
+  if (flight) {
+    bFly.hidden = false
+    bFly.addEventListener('click', () => { if (flight.state.on) flight.stop(); else { walk.stop(); flight.start() } })
+    flight.onZone = (z, i) => { bFly.classList.add('on'); bFly.textContent = `Zone ${i + 1}: ${z.mix}${z.languages?.length ? ' ' + z.languages.join(' ') : ''}`; mixSel.value = mixValue(); panel.hidden = true }
+    flight.onArrive = s => showPanel(s)
+    flight.onStop = () => { bFly.classList.remove('on'); bFly.textContent = 'Fly' }
+  }
 
   const manifests = new Map()
   const manifestOf = async s => {
@@ -62,7 +83,8 @@ export function wireHud (root, world, sound, speakers, map, div, walk) {
   const showPanel = async s => {
     panelId = s.id
     panel.hidden = false
-    panel.innerHTML = `<button class="hear-panel-close" data-act="dismiss" title="Close the transcript">✕</button><div class="hear-role">${s.role === 'human_reading' ? 'human reading' : 'synthetic voice'} · ${esc(s.voice || '')}</div><h4>${esc(s.title)}</h4><div style="color:#94a3b1;font-size:12px">${esc(s.heading || '')} · fragment ${esc(s.fragment_id || '')}${s.district ? ` · district ${esc(s.district)}` : ''}</div><div class="hear-cues"></div><div class="hear-prov">loading provenance…</div><div class="hear-actions"><button data-act="inside" class="primary">Go inside</button><button data-act="open">Open source page</button></div>`
+    const nat = s.native && sound.spokenOf?.(s.id) !== 'en'
+    panel.innerHTML = `<button class="hear-panel-close" data-act="dismiss" title="Close the transcript">✕</button><div class="hear-role">${s.role === 'human_reading' ? 'human reading' : 'synthetic voice'} · ${esc(nat ? s.native_voice : s.voice || '')}${nat ? ` · in ${esc(s.language)}` : ''}</div><h4>${esc(s.title)}</h4><div style="color:#94a3b1;font-size:12px">${esc(s.heading || '')} · fragment ${esc(s.fragment_id || '')}${s.district ? ` · district ${esc(s.district)}` : ''}</div><div class="hear-cues"></div><div class="hear-prov">loading provenance…</div><div class="hear-actions"><button data-act="inside" class="primary">Go inside</button><button data-act="open">Open source page</button></div>`
     panel.querySelector('[data-act="open"]').addEventListener('click', () => openPage(div, s.title, s.id.split('/')[0]))
     panel.querySelector('[data-act="dismiss"]').addEventListener('click', () => { panel.hidden = true })
     panel.querySelector('[data-act="inside"]').addEventListener('click', () => enterInterior(s))
@@ -111,10 +133,13 @@ export function wireHud (root, world, sound, speakers, map, div, walk) {
   sound.onTick = (list, lod, liveNodes) => {
     const st = root.querySelector('.hear-status')
     if (!st) return
-    const talking = list.filter(x => x.intelligible).map(x => short(x.title))
+    const talking = list.filter(x => x.intelligible).map(x => `${short(x.title)}${x.language && x.language !== 'en' ? ` (${x.language})` : ''}`)
+    const m = sound.mix; const mixText = `mix ${m.mode}${m.languages.length ? ' ' + m.languages.join(' ') : ''} · `
+    const f = flight?.state; const flying = f?.on ? `flying · zone ${f.zone + 1} ${short(f.zoneName || '')} · ${Math.round(f.remaining)} s · ` : ''
+
     const w = walk.state
     const going = w.on ? (w.phase === 'leg' ? `walking to ${short(w.target.title)} · ${Math.round(w.remaining)} m · ` : `at ${short(w.target.title)}, listening · `) : ''
-    st.textContent = `${going}${lod} scale · ${list.length} of ${speakers.length} voices sounding, ${liveNodes} audio nodes alive · intelligible: ${talking.join(', ') || 'none'}`
+    st.textContent = `${flying}${going}${mixText}${lod} scale · ${list.length} of ${speakers.length} voices sounding, ${liveNodes} audio nodes alive · intelligible: ${talking.join(', ') || 'none'}`
   }
   root._hearTrial = wireTrial(root, world, sound, speakers)
 }

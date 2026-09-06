@@ -17,14 +17,28 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
   const dbToGain = db => Math.pow(10, db / 20)
 
   const busOf = s => s.role === 'human_reading' ? 'human_speech' : 'synthetic_speech'
+  // ---- Multilingual Mixes (policy 0.2.0): which languages sound, and which of a house's two readings plays
+  const base = l => String(l || 'en').toLowerCase().split('-')[0]
+  const mix = { mode: policy.mix || 'native', languages: (policy.languages || []).map(base) }
+  const perLang = policy.per_language_intelligible ?? 1
+  const hasNative = s => !!(s.native && (s.native_opus || s.native_audio))
+  const langOf = s => hasNative(s) ? base(s.language) : 'en'             // what the house can speak besides English
+  const spokenOf = e => e.track === 'nat' ? langOf(e.s) : 'en'            // what it is speaking now
+  const allowed = e => !mix.languages.length || mix.languages.includes(langOf(e.s)) || (mix.mode === 'native' && mix.languages.includes('en'))
+  // the track a house should be on: solo, pair and polyphonic always take the original; native takes the
+  // English at city and street scale and crosses to the original at the threshold of the house you chose
+  const wantTrack = e => !hasNative(e.s) ? 'en' : mix.mode !== 'native' ? 'nat'
+    : ((lod === 'threshold' || lod === 'interior') && (focusId === e.s.id || listenId === e.s.id || insideId === e.s.id) ? 'nat' : 'en')
   const MAX_NODES = 14   // audio graphs alive at once: the budget plus a few cooling down
-  const build = e => {   // the audio graph for one house, made only when it is needed
+  const build = (e, track) => {   // the audio graph for one house, made only when it is needed
     if (e.pa) return
     const s = e.s
+    e.track = track || wantTrack(e)
     const el = document.createElement('audio')
     el.crossOrigin = 'anonymous'; el.preload = 'none'; el.loop = true
     const canOpus = el.canPlayType('audio/ogg; codecs=opus')
-    el.src = canOpus && s.opus ? s.opus : s.audio
+    const src = e.track === 'nat' ? { opus: s.native_opus, audio: s.native_audio } : { opus: s.opus, audio: s.audio }
+    el.src = canOpus && src.opus ? src.opus : src.audio
     const pa = new three.PositionalAudio(listener)
     pa.setMediaElementSource(el)
     pa.setRefDistance(4); pa.setMaxDistance(45); pa.setRolloffFactor(1.2); pa.setDistanceModel('inverse')
@@ -36,7 +50,7 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     let chain = null
     if (chainFactory) {
       try {
-        chain = chainFactory(ctx, { id: s.id, slug: s.slug, title: s.title, role: s.role, district: s.district, voice: s.voice, language: s.language || 'en', x: e.x, y: e.y, z: e.z }, policy) || null
+        chain = chainFactory(ctx, { id: s.id, slug: s.slug, title: s.title, role: s.role, district: s.district, voice: e.track === 'nat' ? s.native_voice : s.voice, language: spokenOf(e), x: e.x, y: e.y, z: e.z }, policy) || null
       } catch (err) { console.warn('hear: voice chain failed for', s.slug, err); chain = null }
     }
     if (chain?.input && chain?.output) { lp.connect(chain.input); chain.output.connect(buses[busOf(s)]) } else { chain = null; lp.connect(buses[busOf(s)]) }
@@ -51,7 +65,22 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     e.el.pause(); e.el.src = ''; world.scene.remove(e.pa)
     try { e.pa.disconnect() } catch {}
     try { e.chain?.dispose?.() } catch {}
-    Object.assign(e, { el: null, pa: null, gain: null, lp: null, chain: null, started: false })
+    Object.assign(e, { el: null, pa: null, gain: null, lp: null, chain: null, started: false, cues: null, track: null })
+  }
+  // the crossfade between a house's two readings: the old graph fades out and is torn down, the new one
+  // starts from the top and fades in — the original speaks at the threshold, from its first word
+  const retrack = (e, want, now) => {
+    if (!e.pa || e.track === want) return
+    const old = { el: e.el, pa: e.pa, gain: e.gain, lp: e.lp, chain: e.chain }
+    ramp(old.gain.gain, 0, fadeMs)
+    setTimeout(() => { try { old.el.pause(); old.el.src = ''; world.scene.remove(old.pa); old.pa.disconnect(); old.chain?.dispose?.() } catch {} }, fadeMs + 80)
+    Object.assign(e, { el: null, pa: null, gain: null, lp: null, chain: null, cues: null, started: false })
+    build(e, want)
+    e.started = true; e.since = now
+    try { e.el.currentTime = 0 } catch {}
+    e.el.play().catch(() => {})
+    ramp(e.gain.gain, e.target || 1, fadeMs)
+    if (e.intelligible) { e.intelligible = false; setIntelligible(e, true) }
   }
   const live = () => [...emitters.values()].filter(e => e.pa).length
 
@@ -139,6 +168,10 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     for (const e of all) e.score = score(e)
     for (const e of all) if (e.chain?.update && e.pa) { try { e.chain.update({ distance: distance(e), facing: facing(e), intelligible: e.intelligible, active: e.active, lod, score: e.score, focused: focusId === e.s.id }) } catch {} }
     for (const e of all) if (!e.active && e.pa && now - e.idleSince > 20000 && now - (e.primed || 0) > 20000 && e.s.id !== listenId && live() > MAX_NODES) teardown(e)
+    // the mix: a language not on the allow-list is muted, not ducked — its houses leave the budget and never enter it
+    for (const e of all) if (e.active && !allowed(e) && e.s.id !== listenId) deactivate(e, now)
+    // the track each house should be on now (native mode crosses to the original at the threshold)
+    for (const e of all) if (e.active && e.pa) { const w = wantTrack(e); if (w !== e.track) retrack(e, w, now) }
     // the listened house keeps playing whatever paused its element (a background tab, a stray pause): the clause is the walker's clock
     if (listenId) { const e = emitters.get(listenId); if (e?.el && e.active && e.el.paused && !e.el.ended && e.el.readyState >= 2) e.el.play().catch(() => {}) }
     if (insideId) {
@@ -153,7 +186,7 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     // budget with hysteresis: a challenger must beat the weakest active by the deadband,
     // and the weakest must have dwelt at least min_dwell_ms
     const active = all.filter(e => e.active).sort((a, b) => a.score - b.score)
-    const idle = all.filter(e => !e.active && e.score > 0.02).sort((a, b) => b.score - a.score)
+    const idle = all.filter(e => !e.active && allowed(e) && e.score > 0.02).sort((a, b) => b.score - a.score)
     const budget = budgetFor(lod)
     while (active.length > budget) { const e = active.shift(); deactivate(e, now) }
     while (active.length < budget && idle.length) { const e = idle.shift(); activate(e, now); active.push(e) }
@@ -167,13 +200,16 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     for (const e of active) if (e.score < 0.01 && now - e.since >= dwellMs) deactivate(e, now)
     const byScore = all.filter(e => e.active).sort((a, b) => b.score - a.score)
     const limit = intelligibleFor(lod)
-    byScore.forEach((e, i) => setIntelligible(e, i < limit))
+    if (mix.mode === 'polyphonic') {   // one intelligible strand per language, so the crowd is a set of tongues, not a wall
+      const perLanguage = new Map(); let n = 0
+      for (const e of byScore) { const l = spokenOf(e); const c = perLanguage.get(l) || 0; const on = n < limit && c < perLang; if (on) { n++; perLanguage.set(l, c + 1) } setIntelligible(e, on) }
+    } else byScore.forEach((e, i) => setIntelligible(e, i < limit))
     // ducking: when a house is focused, the rest drop by focus_duck_db
     for (const e of byScore) {
       const duck = focusId && focusId !== e.s.id ? dbToGain(policy.focus_duck_db) : 1
       if (e.active && e.target !== duck) { e.target = duck; ramp(e.gain.gain, duck, fadeMs) }
     }
-    sound.onTick?.(byScore.map(e => ({ id: e.s.id, title: e.s.title, score: e.score, intelligible: e.intelligible })), lod, live())
+    sound.onTick?.(byScore.map(e => ({ id: e.s.id, title: e.s.title, score: e.score, intelligible: e.intelligible, language: spokenOf(e) })), lod, live())
   }
 
   const wait = ms => new Promise(r => setTimeout(r, ms))
@@ -206,9 +242,10 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     if (!e || !enabled) return false
     endListen(false)
     held = false
-    build(e)
     const now = performance.now()
     listenId = id; focusId = id
+    if (e.pa && hasNative(e.s) && mix.mode === 'native' && e.track !== 'nat') teardown(e)   // a chosen house speaks its original from the top
+    build(e, hasNative(e.s) ? 'nat' : 'en')
     e.active = true; e.started = true; e.since = now; e.target = 1; e.el.loop = false   // active before the dip, so frame() neither activates it at a random offset nor ducks it
     ramp(e.gain.gain, 0, 120)
     await wait(130)
@@ -247,13 +284,23 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     bus (name, v) { if (buses[name]) buses[name].gain.value = v },
     currentTime (id) { return emitters.get(id)?.el?.currentTime ?? 0 },
     get lod () { return lod },
+    get mix () { return { ...mix } },
+    languages () { const c = new Map(); for (const s of speakers) { const l = langOf(s); c.set(l, (c.get(l) || 0) + 1) } return c },
+    // change the mix live: unlisted houses fall silent, houses on the wrong track cross to the right one
+    setMix (mode, languages = []) {
+      mix.mode = ['native', 'solo', 'pair', 'polyphonic'].includes(mode) ? mode : 'native'; mix.languages = languages.map(base)
+      if (!enabled) return
+      const now = performance.now()
+      for (const e of emitters.values()) { if (e.active && !allowed(e)) deactivate(e, now); else if (e.pa) { const w = wantTrack(e); if (w !== e.track) { if (e.active) retrack(e, w, now); else teardown(e) } } }
+    },
+    spokenOf (id) { const e = emitters.get(id); return e ? spokenOf(e) : 'en' },
     get chainFactory () { return chainFactory },
     setChain (fn) { chainFactory = typeof fn === 'function' ? fn : null; for (const e of emitters.values()) teardown(e) },   // live swap from the console: graphs rebuild on next activation
     get liveNodes () { return live() },
     async cues (id) {
       const e = emitters.get(id); if (!e) return []
       if (!e.cues) {
-        const vtt = (e.s.audio || '').replace(/\.(m4a|opus)$/, '.vtt')
+        const vtt = e.track === 'nat' && e.s.native_vtt ? e.s.native_vtt : (e.s.audio || '').replace(/\.(m4a|opus)$/, '.vtt')
         e.cues = await fetch(vtt, { mode: 'cors' }).then(r => r.text()).then(parseVtt).catch(() => [])
       }
       return e.cues
