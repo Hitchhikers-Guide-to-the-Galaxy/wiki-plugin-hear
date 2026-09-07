@@ -136,11 +136,11 @@ const shellHtml = spec => `
     <label>synthetic <input type="range" data-bus="synthetic_speech" min="0" max="100" value="100"></label>
     <select data-act="solo"><option value="">Solo a house…</option></select>
     <select data-act="mix" title="The mix: which languages sound"><option value="native">Mix: native</option></select>
-    <button data-act="fly" hidden title="Fly the language zones of the journey">Fly</button>
+    <button data-act="fly" hidden title="Fly the journey">Fly</button>
     <button data-act="above" title="Back above the street">Above</button>
     <button data-act="walk" title="Be carried round the street: each house speaks its clause from the top when you arrive">Walk</button>
     <button data-act="next" title="On to the next house">Next</button>
-    <button data-act="trial" title="The One Audible Street questions: four short tasks, results you can copy">Listening trial</button>
+    <button data-act="trial" title="The One Audible Street questions: four short tasks, results you can copy">Listening game</button>
     <button data-act="full" title="Full screen (F); Esc leaves">Full screen</button>
     <span class="hear-pad" title="Walk: hold a key, or W A S D on the keyboard"><button data-key="a">◀</button><button data-key="w">▲</button><button data-key="s">▼</button><button data-key="d">▶</button><button data-key="q">↑</button><button data-key="e">↓</button></span>
     <button data-act="close" class="hear-close" title="Close: back to the beginning, silent, the gate up">✕ Close</button>

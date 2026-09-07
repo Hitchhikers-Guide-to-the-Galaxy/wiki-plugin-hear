@@ -18,7 +18,7 @@ export function makeJourney (world, sound, speakers, map, journey) {
   const S = probe.x - vx - vw / 2 !== 0 ? px / (probe.x - vx - vw / 2) : 1
   const toWorld = (x, y) => [(x - vx - vw / 2) * S, -((y - vy - vh / 2) * S)]
   const state = { on: false, zone: -1, zoneName: '', remaining: 0, mix: null }
-  const flight = { state, onZone: null, onZoneEnd: null, onStop: null, zones: journey?.zones || [], log: [] }
+  const flight = { state, onZone: null, onZoneEnd: null, onStop: null, zones: journey?.zones || [], log: [], name: journey?.name || '', id: journey?.journey_id || '' }
   let sawFrame = false, pump = 0, hooked = false, leg = null, sampler = 0
   // the zone log: what was intelligible, in which language, while the listener was in each zone — the machine's answer
   // to the trial's first question, and the record a human listener copies with theirs
@@ -58,7 +58,9 @@ export function makeJourney (world, sound, speakers, map, journey) {
     leg = null
     if (z.descend) {
       const s = speakers.find(x => x.slug === z.descend)
-      if (s) { world.threshold(s.id); if (sound.enabled) sound.listen(s.id).then(() => { if (state.on) stop() }); flight.onArrive?.(s) } else stop()
+      // listen to the house from the top; when its clause ends the flight goes on to the next zone, or ends if this was the last
+      const after = () => { if (!state.on) return; if (state.zone < flight.zones.length - 1) next(); else stop() }
+      if (s) { world.threshold(s.id); if (sound.enabled) sound.listen(s.id).then(after); else setTimeout(after, Math.max(1000, z.seconds * 400)); flight.onArrive?.(s) } else stop()
       return
     }
     // hold in the zone for its remaining seconds; then, if the HUD asks questions, wait for the answers before moving on
@@ -76,6 +78,9 @@ export function makeJourney (world, sound, speakers, map, journey) {
     if (!z) { stop(); return }
     state.zoneName = z.name; state.mix = { mode: z.mix, languages: z.languages || [] }
     sound.setMix?.(z.mix, z.languages || [])
+    // "one voice": a zone marked alone lets only its house sound
+    const aloneHouse = z.alone && z.descend ? speakers.find(x => x.slug === z.descend) : null
+    sound.only?.(aloneHouse ? aloneHouse.id : null)
     flight.log[state.zone] = { zone: state.zone + 1, name: z.name, mix: z.mix, languages: z.languages || [], seconds: z.seconds, heard: {}, houses: new Set(), started: new Date().toISOString() }
     const [wx, wz] = z.descend && speakers.find(x => x.slug === z.descend)
       ? (() => { const s = speakers.find(x => x.slug === z.descend); const [hx, hz] = world.nodePos.get(s.id); return [hx, hz] })()
@@ -92,7 +97,7 @@ export function makeJourney (world, sound, speakers, map, journey) {
   }
   const stop = () => {
     if (!state.on) return
-    state.on = false; leg = null; state.remaining = 0; clearInterval(pump); clearInterval(sampler)
+    state.on = false; leg = null; state.remaining = 0; clearInterval(pump); clearInterval(sampler); sound.only?.(null)
     for (const r of flight.log) if (r && r.houses instanceof Set) r.houses = [...r.houses]
     flight.onStop?.()
   }

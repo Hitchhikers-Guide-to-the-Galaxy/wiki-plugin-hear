@@ -24,7 +24,9 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
   const hasNative = s => !!(s.native && (s.native_opus || s.native_audio))
   const langOf = s => hasNative(s) ? base(s.language) : 'en'             // what the house can speak besides English
   const spokenOf = e => e.track === 'nat' ? langOf(e.s) : 'en'            // what it is speaking now
-  const allowed = e => !mix.languages.length || mix.languages.includes(langOf(e.s)) || (mix.mode === 'native' && mix.languages.includes('en'))
+  let onlyId = null   // "one voice": a zone that lets a single house sound and nothing else
+  const allowed = e => (!onlyId || e.s.id === onlyId) && (!mix.languages.length || mix.languages.includes(langOf(e.s)) || (mix.mode === 'native' && mix.languages.includes('en')))
+  const shared = () => mix.mode === 'pair' || mix.mode === 'polyphonic'   // modes that owe every allowed language a voice
   // the track a house should be on: solo, pair and polyphonic always take the original; native takes the
   // English at city and street scale and crosses to the original at the threshold of the house you chose
   const wantTrack = e => !hasNative(e.s) ? 'en' : mix.mode !== 'native' ? 'nat'
@@ -190,17 +192,34 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     const budget = budgetFor(lod)
     while (active.length > budget) { const e = active.shift(); deactivate(e, now) }
     while (active.length < budget && idle.length) { const e = idle.shift(); activate(e, now); active.push(e) }
+    // a pair or a polyphony owes each allowed language a house: the nearest of that language is chosen on its own,
+    // even when every nearer house speaks another tongue (0.8.2; before this a pair over Iberia was all Spanish)
+    const perLangActive = new Map(); for (const e of active) { const l = spokenOf(e); perLangActive.set(l, (perLangActive.get(l) || 0) + 1) }
+    if (shared()) {
+      const owed = mix.mode === 'pair' ? mix.languages : [...new Set(idle.map(spokenOf))]
+      for (const l of owed) {
+        if (perLangActive.get(l)) continue
+        const ci = idle.findIndex(e => spokenOf(e) === l); if (ci < 0) continue
+        if (active.length >= budget) {
+          const v = active.find(e => (perLangActive.get(spokenOf(e)) || 0) > 1); if (!v) continue
+          deactivate(v, now); active.splice(active.indexOf(v), 1); perLangActive.set(spokenOf(v), perLangActive.get(spokenOf(v)) - 1)
+        }
+        const c = idle.splice(ci, 1)[0]; activate(c, now); active.push(c); active.sort((a, b) => a.score - b.score); perLangActive.set(l, 1)
+      }
+    }
+    const sole = e => shared() && (perLangActive.get(spokenOf(e)) || 0) <= 1
     for (const c of idle) {
-      const weakest = active[0]
+      const weakest = active.find(e => !sole(e))
       if (!weakest) break
       if (c.score > weakest.score + deadband && now - weakest.since >= dwellMs) {
-        deactivate(weakest, now); activate(c, now); active.shift(); active.push(c); active.sort((a, b) => a.score - b.score)
+        deactivate(weakest, now); activate(c, now); active.splice(active.indexOf(weakest), 1); active.push(c); active.sort((a, b) => a.score - b.score)
+        perLangActive.set(spokenOf(weakest), perLangActive.get(spokenOf(weakest)) - 1); perLangActive.set(spokenOf(c), (perLangActive.get(spokenOf(c)) || 0) + 1)
       } else break
     }
     for (const e of active) if (e.score < 0.01 && now - e.since >= dwellMs) deactivate(e, now)
     const byScore = all.filter(e => e.active).sort((a, b) => b.score - a.score)
     const limit = intelligibleFor(lod)
-    if (mix.mode === 'polyphonic') {   // one intelligible strand per language, so the crowd is a set of tongues, not a wall
+    if (shared()) {   // one intelligible strand per language, so a pair is two tongues and the crowd is a set of them, not a wall
       const perLanguage = new Map(); let n = 0
       for (const e of byScore) { const l = spokenOf(e); const c = perLanguage.get(l) || 0; const on = n < limit && c < perLang; if (on) { n++; perLanguage.set(l, c + 1) } setIntelligible(e, on) }
     } else byScore.forEach((e, i) => setIntelligible(e, i < limit))
@@ -295,6 +314,14 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
       for (const e of emitters.values()) { if (e.active && !allowed(e)) deactivate(e, now); else if (e.pa) { const w = wantTrack(e); if (w !== e.track) { if (e.active) retrack(e, w, now); else teardown(e) } } }
     },
     spokenOf (id) { const e = emitters.get(id); return e ? spokenOf(e) : 'en' },
+    // one voice: only this house may sound (null lifts it); the flight uses it for a zone that is a single door
+    only (id = null) {
+      onlyId = id || null
+      if (!enabled) return
+      const now = performance.now()
+      for (const e of emitters.values()) if (e.active && !allowed(e) && e.s.id !== listenId) deactivate(e, now)
+    },
+    get onlyId () { return onlyId },
     get chainFactory () { return chainFactory },
     setChain (fn) { chainFactory = typeof fn === 'function' ? fn : null; for (const e of emitters.values()) teardown(e) },   // live swap from the console: graphs rebuild on next activation
     get liveNodes () { return live() },

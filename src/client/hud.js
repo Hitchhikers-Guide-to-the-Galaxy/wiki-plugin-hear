@@ -55,8 +55,9 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
   const bFly = hud.querySelector('[data-act="fly"]')
   if (flight) {
     bFly.hidden = false
+    if (flight.name) bFly.title = `Fly: ${flight.name}`
     bFly.addEventListener('click', () => { if (flight.state.on) flight.stop(); else { walk.stop(); flight.start() } })
-    flight.onZone = (z, i) => { bFly.classList.add('on'); bFly.textContent = `Zone ${i + 1}: ${z.mix}${z.languages?.length ? ' ' + z.languages.join(' ') : ''}`; mixSel.value = mixValue(); panel.hidden = true }
+    flight.onZone = (z, i) => { bFly.classList.add('on'); bFly.textContent = `Zone ${i + 1}: ${z.alone ? 'one voice' : z.mix}${z.languages?.length ? ' ' + z.languages.join(' ') : ''}`; mixSel.value = mixValue(); panel.hidden = true }
     flight.onArrive = s => showPanel(s)
     flight.onStop = () => { bFly.classList.remove('on'); bFly.textContent = 'Fly'; if (quiz.on) finishQuiz() }
     // the multilingual listening trial: Fly with questions — after each zone, which languages did you hear, and did it feel like one place
@@ -79,11 +80,11 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
     })
     const finishQuiz = () => {
       quiz.on = false; flight.onZoneEnd = null
-      const result = { listener: quiz.listener || 'listener', kind: 'multilingual flight trial', started: quiz.started, finished: new Date().toISOString(), policy_id: sound.policy.policy_id || 'default', journey: flight.zones.length, zones: quiz.answers,
+      const result = { listener: quiz.listener || 'listener', kind: 'multilingual flight game', started: quiz.started, finished: new Date().toISOString(), policy_id: sound.policy.policy_id || 'default', journey: flight.zones.length, zones: quiz.answers,
         summary: { zones_named_correctly: quiz.answers.filter(a => a.correct).length + ' of ' + quiz.answers.length, pure_zones_read_as_place: quiz.answers.filter(a => a.mix === 'solo' && a.place === 'yes').length + ' of ' + quiz.answers.filter(a => a.mix === 'solo').length } }
       try { const all = JSON.parse(localStorage.getItem('hear-flight-trials') || '[]'); all.push(result); localStorage.setItem('hear-flight-trials', JSON.stringify(all.slice(-20))) } catch {}
       tbox.hidden = false
-      tbox.innerHTML = `<h4>Your flight</h4><div class="hear-q">Zones named correctly: ${result.summary.zones_named_correctly}. Pure zones that felt like one place: ${result.summary.pure_zones_read_as_place}.<br>Copy the record onto the Multilingual Listening Trial page.</div><pre>${esc(JSON.stringify(result))}</pre><div class="hear-opts"><button data-act="copy" class="primary">Copy JSON</button><button data-act="close">Close</button></div>`
+      tbox.innerHTML = `<h4>Your flight</h4><div class="hear-q">Zones named correctly: ${result.summary.zones_named_correctly}. Pure zones that felt like one place: ${result.summary.pure_zones_read_as_place}.<br>Copy the record onto the Multilingual Listening Game page.</div><pre>${esc(JSON.stringify(result))}</pre><div class="hear-opts"><button data-act="copy" class="primary">Copy JSON</button><button data-act="close">Close</button></div>`
       tbox.querySelector('[data-act="copy"]').addEventListener('click', () => navigator.clipboard?.writeText(JSON.stringify(result)))
       tbox.querySelector('[data-act="close"]').addEventListener('click', () => { tbox.hidden = true })
       root._hearFlightTrial = result
@@ -247,12 +248,12 @@ function wireTrial (root, world, sound, speakers) {
     return { target: target.slug, title: target.title, chosen, correct: chosen === target.slug, seconds: +((performance.now() - t0) / 1000).toFixed(1), options: opts.map(o => o.value) }
   }
   async function run ({ auto = false, listener = '' } = {}) {
-    if (!sound.enabled) { await ask('Listening trial', 'Enter the soundscape first: the trial needs the voices.', [{ label: 'OK', value: 1, primary: true }]); box.hidden = true; return null }
+    if (!sound.enabled) { await ask('Listening game', 'Enter the soundscape first: the trial needs the voices.', [{ label: 'OK', value: 1, primary: true }]); box.hidden = true; return null }
     hook(); aborted = false
     const pool = shuffle(nearSquare())
-    if (pool.length < 6) { await ask('Listening trial', 'Not enough speaking houses near the square for a trial.', [{ label: 'OK', value: 1 }]); box.hidden = true; return null }
+    if (pool.length < 6) { await ask('Listening game', 'Not enough speaking houses near the square for a trial.', [{ label: 'OK', value: 1 }]); box.hidden = true; return null }
     const result = { listener: listener || (auto ? 'machine baseline' : 'listener'), auto, started: new Date().toISOString(), policy_id: sound.policy.policy_id || 'default', voices: speakers.length, isolate: [], attribute: [], fatigue: null, structure: null }
-    if (!auto) await ask('Listening trial', 'Four short tasks, about five minutes: find three named houses by ear, name three clear voices, then two questions. Headphones help.', [{ label: 'Begin', value: 1, primary: true }])
+    if (!auto) await ask('Listening game', 'Four short tasks, about five minutes: find three named houses by ear, name three clear voices, then two questions. Headphones help.', [{ label: 'Begin', value: 1, primary: true }])
     for (const t of pool.slice(0, 3)) { if (aborted) return null; result.isolate.push(await isolate(t, auto)) }
     for (const t of pool.slice(3, 6)) { if (aborted) return null; result.attribute.push(await attribute(t, auto)) }
     if (aborted) return null
@@ -268,7 +269,7 @@ function wireTrial (root, world, sound, speakers) {
     try { const all = JSON.parse(localStorage.getItem('hear-trials') || '[]'); all.push(result); localStorage.setItem('hear-trials', JSON.stringify(all.slice(-20))) } catch {}
     trial.last = result
     box.hidden = false
-    box.innerHTML = `<h4>Your results</h4><div class="hear-q">Find: median ${result.summary.isolate_median_s} s, gave up ${result.summary.gave_up}. Attribution: ${result.summary.attribution_correct}. Fatigue: ${result.fatigue ?? '—'}. Structure revealed: ${result.structure ? (result.structure.yes ? 'yes' : 'no') : '—'}.<br>Copy the record below onto the Listening Trial page, or send it to David.</div><pre>${esc(JSON.stringify(result))}</pre><div class="hear-opts"><button data-act="copy" class="primary">Copy JSON</button><button data-act="close">Close</button></div>`
+    box.innerHTML = `<h4>Your results</h4><div class="hear-q">Find: median ${result.summary.isolate_median_s} s, gave up ${result.summary.gave_up}. Attribution: ${result.summary.attribution_correct}. Fatigue: ${result.fatigue ?? '—'}. Structure revealed: ${result.structure ? (result.structure.yes ? 'yes' : 'no') : '—'}.<br>Copy the record below onto the Listening Game page.</div><pre>${esc(JSON.stringify(result))}</pre><div class="hear-opts"><button data-act="copy" class="primary">Copy JSON</button><button data-act="close">Close</button></div>`
     box.querySelector('[data-act="copy"]').addEventListener('click', () => navigator.clipboard?.writeText(JSON.stringify(result)))
     box.querySelector('[data-act="close"]').addEventListener('click', () => { box.hidden = true })
     return result
