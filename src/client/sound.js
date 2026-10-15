@@ -5,6 +5,12 @@ import { nodesById, parseVtt } from './util.js'
 export function makeSound (three, world, speakers, policy, root, chainFactory = null) {
   const { camera, nodePos, heightOf } = world
   let listener = null, ctx = null, enabled = false, muted = false, paused = false, timer = 0
+  let master = null, limiter = null   // every bus -> master (room made as voices pile up) -> limiter -> the listener (0.9.0: nothing clips)
+  let director = null                 // a flight's mix: () => [{id, gain, clear, track}]; while set, no competition between houses
+  let spreadRef = null                // a flight widens reference distances with altitude
+  // a house faces the square, 14 dB down from behind.  A flight stands wherever the door search finds room, often
+  // behind the house (Paraguay measured 8.7 dB quieter than Egypt 2012, both -16 LUFS clips), so under a flight no cone
+  const cone = pa => spreadRef == null ? pa.setDirectionalCone(180, 270, 0.2) : pa.setDirectionalCone(360, 360, 1)
   const buses = {}
   const emitters = new Map()   // id -> emitter
   let focusId = null, insideId = null
@@ -43,10 +49,10 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     el.src = canOpus && src.opus ? src.opus : src.audio
     const pa = new three.PositionalAudio(listener)
     pa.setMediaElementSource(el)
-    pa.setRefDistance(4); pa.setMaxDistance(45); pa.setRolloffFactor(1.2); pa.setDistanceModel('inverse')
-    pa.setDirectionalCone(180, 270, 0.2)
+    pa.setRefDistance(spreadRef ?? 4); pa.setMaxDistance(45); pa.setRolloffFactor(1.2); pa.setDistanceModel('inverse')
+    cone(pa)
     const gain = ctx.createGain(); gain.gain.value = 0
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = lod === 'region' ? 400 : 700   // a new voice murmurs until promoted
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.5; lp.frequency.value = murmurHz()   // a new voice murmurs until promoted
     // panner -> gain (crossfade, duck) -> low-pass (murmur) -> [voice chain, if a MODULE gave one] -> bus
     pa.gain.disconnect(); pa.gain.connect(gain); gain.connect(lp)
     let chain = null
@@ -92,8 +98,12 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     camera.add(listener)
     ctx = listener.context
     if (ctx.state === 'suspended') await ctx.resume()
+    master = ctx.createGain(); master.gain.value = 1; master._target = 1
+    limiter = ctx.createDynamicsCompressor()
+    limiter.threshold.value = -6; limiter.knee.value = 3; limiter.ratio.value = 20; limiter.attack.value = 0.003; limiter.release.value = 0.25
+    master.connect(limiter); limiter.connect(listener.getInput())
     for (const b of ['human_speech', 'synthetic_speech', 'ambience', 'ui']) {
-      const g = ctx.createGain(); g.connect(listener.getInput()); buses[b] = g
+      const g = ctx.createGain(); g.connect(master); buses[b] = g
     }
     for (const s of speakers) {
       const [x, z] = nodePos.get(s.id); const n = nodesById({ nodes: world.index }, s.id)
@@ -121,15 +131,23 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     // Equal power is a law for two signals crossing; a single level moving
     // between two non-zero values must ramp linearly or it bulges above unity.
     const t0 = ctx.currentTime; const from = param.value
-    if (Math.abs(to - from) < 0.02) return
-    param.cancelScheduledValues(t0)
-    param.setValueAtTime(from, t0)
+    if (Math.abs(to - from) < 0.005) return
+    const dur = Math.max(0.01, ms / 1000)
+    // hold where the level is now: a curve still running must not make the next move throw (0.9.0)
+    try { if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t0); else param.cancelScheduledValues(t0); param.setValueAtTime(from, t0) } catch { try { param.cancelScheduledValues(0); param.setValueAtTime(from, t0) } catch {} }
     if (from < 0.01 || to < 0.01) {
-      const n = 24; const curve = new Float32Array(n)
+      const n = 32; const curve = new Float32Array(n)
       for (let i = 0; i < n; i++) { const p = i / (n - 1); curve[i] = from * Math.cos(p * Math.PI / 2) + to * Math.sin(p * Math.PI / 2) }
-      try { param.setValueCurveAtTime(curve, t0, Math.max(0.01, ms / 1000)); return } catch {}
+      try { param.setValueCurveAtTime(curve, t0 + 0.001, dur); return } catch {}
     }
-    param.linearRampToValueAtTime(to, t0 + Math.max(0.01, ms / 1000))
+    try { param.linearRampToValueAtTime(to, t0 + dur) } catch { param.value = to }
+  }
+  // the master makes room as voices pile up: equal-power summing, so eight voices at full level sit 9 dB down, one sits at unity
+  const levelMaster = gains => {
+    if (!master) return
+    const p = Math.sqrt(gains.reduce((t, g) => t + g * g, 0))
+    const want = Math.min(1, 1 / Math.max(1, p))
+    if (Math.abs(master._target - want) > 0.03) { master._target = want; ramp(master.gain, want, 500) }
   }
   const activate = (e, now) => {
     build(e)
@@ -139,15 +157,19 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     e.target = 1
     ramp(e.gain.gain, 1, fadeMs)
   }
-  const deactivate = (e, now) => {
+  const deactivate = (e, now, ms = fadeMs) => {
     e.active = false; e.intelligible = false; e.since = now; e.target = 0
-    ramp(e.gain.gain, 0, fadeMs); e.idleSince = now
-    setTimeout(() => { if (!e.active && e.el) e.el.pause() }, fadeMs + 50)
+    if (e.gain) ramp(e.gain.gain, 0, ms)
+    e.idleSince = now
+    setTimeout(() => { if (!e.active && e.el) e.el.pause() }, ms + 50)
   }
+  // the murmur: a soft low-pass (Q 0.5) rather than the old 700 Hz wall that a crowd turned into a roar (0.9.0)
+  const murmurHz = () => lod === 'region' ? 600 : 1100
   const setIntelligible = (e, on) => {
     if (e.intelligible === on || !e.lp) return
     e.intelligible = on
-    ramp(e.lp.frequency, on ? 20000 : (lod === 'region' ? 400 : 700), fadeMs)
+    const f = e.lp.frequency, t0 = ctx.currentTime
+    try { f.cancelScheduledValues(t0); f.setValueAtTime(Math.max(20, f.value), t0); f.exponentialRampToValueAtTime(on ? 20000 : murmurHz(), t0 + fadeMs / 1000) } catch { f.value = on ? 20000 : murmurHz() }
   }
   // acoustic level of detail, by where the listener is: what the policy's table says sounds at each scale
   const lodOf = () => {
@@ -170,6 +192,7 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     for (const e of all) e.score = score(e)
     for (const e of all) if (e.chain?.update && e.pa) { try { e.chain.update({ distance: distance(e), facing: facing(e), intelligible: e.intelligible, active: e.active, lod, score: e.score, focused: focusId === e.s.id }) } catch {} }
     for (const e of all) if (!e.active && e.pa && now - e.idleSince > 20000 && now - (e.primed || 0) > 20000 && e.s.id !== listenId && live() > MAX_NODES) teardown(e)
+    if (director) { directed(now, all); return }   // a flight owns the mix: authored levels, no competition between houses
     // the mix: a language not on the allow-list is muted, not ducked — its houses leave the budget and never enter it
     for (const e of all) if (e.active && !allowed(e) && e.s.id !== listenId) deactivate(e, now)
     // the track each house should be on now (native mode crosses to the original at the threshold)
@@ -228,8 +251,41 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
       const duck = focusId && focusId !== e.s.id ? dbToGain(policy.focus_duck_db) : 1
       if (e.active && e.target !== duck) { e.target = duck; ramp(e.gain.gain, duck, fadeMs) }
     }
+    levelMaster(byScore.map(e => e.target))
     sound.lastTick = byScore.map(e => ({ id: e.s.id, title: e.s.title, score: e.score, intelligible: e.intelligible, language: spokenOf(e) }))
     sound.onTick?.(sound.lastTick, lod, live())
+  }
+
+  // the flight's mix: every house the director names sounds at the level it names, on the track it names, clear or
+  // murmured; every other house fades out slowly.  The house being listened to keeps listen()'s start from the top —
+  // the director only sets its level once the dip and the seek are done.
+  const directed = (now, all) => {
+    let want
+    try { want = new Map((director() || []).map(d => [d.id, d])) } catch (err) { console.warn('hear: flight mix failed', err); want = new Map() }
+    for (const e of all) {
+      const d = want.get(e.s.id)
+      const g = d ? Math.max(0, d.gain) : 0
+      if (e.s.id === listenId) {
+        if (e.el && e.active && e.el.paused && !e.el.ended && e.el.readyState >= 2 && !e.dipping) e.el.play().catch(() => {})
+        if (!e.dipping && e.gain && Math.abs(e.target - g) > 0.02) { e.target = g; ramp(e.gain.gain, muted ? 0 : g, g < 0.01 ? 1500 : 600) }
+        if (e.lp) setIntelligible(e, d ? !!d.clear : true)
+        continue
+      }
+      if (g < 0.005) { if (e.active) deactivate(e, now, 1800); continue }
+      const track = d.track === 'nat' && hasNative(e.s) ? 'nat' : 'en'
+      if (e.pa && e.track !== track) { if (e.active) retrack(e, track, now); else teardown(e) }
+      if (!e.active) {
+        build(e, track)
+        e.active = true; e.since = now
+        if (!e.started) { try { e.el.currentTime = Math.random() * 10 } catch {} e.started = true }
+        e.el.play().catch(() => {})
+        e.target = g; ramp(e.gain.gain, g, 2500)
+      } else if (Math.abs(e.target - g) > 0.02) { e.target = g; ramp(e.gain.gain, g, 600) }
+      setIntelligible(e, !!d.clear)
+    }
+    levelMaster([...want.values()].map(d => d.gain))
+    sound.lastTick = all.filter(e => e.active).map(e => ({ id: e.s.id, title: e.s.title, score: e.target, intelligible: e.intelligible, language: spokenOf(e) }))
+    sound.onTick?.(sound.lastTick, 'flight', live())
   }
 
   const wait = ms => new Promise(r => setTimeout(r, ms))
@@ -240,7 +296,7 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     if (e?.el) {
       e.el.loop = true
       if (e._onEnded) { e.el.removeEventListener('ended', e._onEnded); e._onEnded = null }
-      if (ended && e.active && !paused) e.el.play().catch(() => {})
+      if (ended && e.active && !paused && !director) e.el.play().catch(() => {})   // under a flight the clause ends and stays ended
     }
     const r = listenResolve; listenResolve = null; r?.(ended)
   }
@@ -254,7 +310,7 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     }
   })
   // prime a house you are walking towards: build its graph and fetch the clip, so arrival does not wait on the network
-  const prime = id => { const e = emitters.get(id); if (!e || !enabled) return; build(e); e.primed = performance.now(); if (e.el.readyState < 1) { e.el.preload = 'auto'; e.el.load() } }
+  const prime = id => { const e = emitters.get(id); if (!e || !enabled) return; if (e.pa && e.track !== (hasNative(e.s) ? 'nat' : 'en') && !e.active) teardown(e); build(e, hasNative(e.s) ? 'nat' : 'en'); e.primed = performance.now(); if (e.el.readyState < 1) { e.el.preload = 'auto'; e.el.load() } }
   // the timing rule: a house starts its clause from the top the moment it is listened to — dip, seek, open, fade —
   // and does not loop while listened to, so the end of the clause is an event the walker can wait for
   const listen = async id => {
@@ -264,15 +320,17 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
     held = false
     const now = performance.now()
     listenId = id; focusId = id
-    if (e.pa && hasNative(e.s) && mix.mode === 'native' && e.track !== 'nat') teardown(e)   // a chosen house speaks its original from the top
-    build(e, hasNative(e.s) ? 'nat' : 'en')
-    e.active = true; e.started = true; e.since = now; e.target = 1; e.el.loop = false   // active before the dip, so frame() neither activates it at a random offset nor ducks it
+    const want = hasNative(e.s) ? 'nat' : 'en'
+    if (e.pa && e.track !== want) teardown(e)   // a chosen house speaks its original from the top
+    build(e, want)
+    e.active = true; e.started = true; e.since = now; e.target = 1; e.el.loop = false; e.dipping = true   // active before the dip, so frame() neither activates it at a random offset nor ducks it
     ramp(e.gain.gain, 0, 120)
     await wait(130)
-    if (listenId !== id) return false
+    if (listenId !== id) { e.dipping = false; return false }
     await seekStart(e.el)
-    if (listenId !== id) return false
+    if (listenId !== id) { e.dipping = false; return false }
     e.el.play().catch(() => {})
+    e.dipping = false
     ramp(e.gain.gain, muted ? 0 : 1, fadeMs); setIntelligible(e, true)
     return new Promise(resolve => {
       listenResolve = resolve
@@ -322,6 +380,17 @@ export function makeSound (three, world, speakers, policy, root, chainFactory = 
       for (const e of emitters.values()) if (e.active && !allowed(e) && e.s.id !== listenId) deactivate(e, now)
     },
     get onlyId () { return onlyId },
+    // a flight's mix (null hands the mix back to the policy's competition)
+    direct (fn) { director = typeof fn === 'function' ? fn : null; if (director) held = false },
+    get directed () { return !!director },
+    // a flight widens every voice's reference distance with altitude: a bed of the whole city from above, a street at the door
+    spread (h) {
+      spreadRef = h == null ? null : Math.max(3.5, h * 0.8)
+      for (const e of emitters.values()) if (e.pa) { e.pa.setRefDistance(spreadRef ?? 4); cone(e.pa) }
+    },
+    get master () { return master },
+    get limiter () { return limiter },
+    get context () { return ctx },
     get chainFactory () { return chainFactory },
     setChain (fn) { chainFactory = typeof fn === 'function' ? fn : null; for (const e of emitters.values()) teardown(e) },   // live swap from the console: graphs rebuild on next activation
     get liveNodes () { return live() },

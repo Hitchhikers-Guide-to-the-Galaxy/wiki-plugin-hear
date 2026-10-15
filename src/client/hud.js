@@ -2,9 +2,11 @@
 import { esc, short, openPage } from './util.js'
 
 // ------------------------------------------------------------------ HUD, panel, interior
-export function wireHud (root, world, sound, speakers, map, div, walk, flight = null) {
+export function wireHud (root, world, sound, speakers, map, div, walk, flight = null, aerial = null) {
   const hud = root.querySelector('.hear-hud')
   const panel = root.querySelector('.hear-panel')
+  // a page opened from the place: leave full screen first, so the page is not hidden behind it
+  const openHere = (title, site) => { if (world.theatre?.on) world.theatre.leave(); openPage(div, title, site) }
   const solo = hud.querySelector('[data-act="solo"]')
   const groups = new Map()
   for (const s of speakers) { const k = s.district || s.site; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s) }
@@ -17,25 +19,26 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
   bMute.addEventListener('click', () => { const on = !bMute.classList.contains('on'); bMute.classList.toggle('on', on); sound.mute(on) })
   bPause.addEventListener('click', () => { const on = !bPause.classList.contains('on'); bPause.classList.toggle('on', on); sound.pause(on) })
   hud.querySelectorAll('input[data-bus]').forEach(r => r.addEventListener('input', () => sound.bus(r.dataset.bus, r.value / 100)))
-  hud.querySelector('[data-act="above"]').addEventListener('click', () => { walk.stop(); world.above(); sound.focus(null); panel.hidden = true })
+  hud.querySelector('[data-act="above"]').addEventListener('click', () => { aerial?.stop(); walk.stop(); world.above(); world.highlight?.([]); sound.focus(null); panel.hidden = true })
   // Walk: the walker carries you round the street; Next skips to the next house; a walking key or Above ends it
   const bWalk = hud.querySelector('[data-act="walk"]')
-  bWalk.addEventListener('click', () => { if (walk.state.on) walk.stop(); else walk.start() })
+  bWalk.addEventListener('click', () => { if (walk.state.on) walk.stop(); else { aerial?.stop(); walk.start() } })
   hud.querySelector('[data-act="next"]').addEventListener('click', () => walk.next())
   walk.onLeg = () => { bWalk.classList.add('on'); bWalk.textContent = 'Stop walking' }
   walk.onArrive = s => showPanel(s)
   walk.onStop = () => { bWalk.classList.remove('on'); bWalk.textContent = 'Walk' }
   // Close: back to the beginning state — outside, silent, the gate up; the voices and the place are kept for the next Enter
   const reset = () => {
-    walk.stop(); flight?.stop(); root._hearTrial?.abort?.()
+    walk.stop(); flight?.stop(); aerial?.stop(); root._hearTrial?.abort?.()
     root.querySelector('.hear-inside')?.remove(); sound.leave()
     panel.hidden = true; clearInterval(cueTimer)
     if (sound.enabled) sound.silence()
-    world.ctl.keys.clear(); world.above()
+    world.ctl.keys.clear(); world.above(); world.highlight?.([])
     hud.hidden = true; root.querySelector('.hear-trial').hidden = true
     const st = root.querySelector('.hear-status'); if (st) st.textContent = root._hearBaseStatus || ''
     root.querySelector('.hear-gate').hidden = false
     bMute.classList.remove('on'); bPause.classList.remove('on'); sound.mute(false); sound.pause(false)
+    world.theatre?.leave()
   }
   hud.querySelector('[data-act="close"]').addEventListener('click', reset)
   solo.addEventListener('change', () => { if (solo.value) goTo(solo.value) })
@@ -56,7 +59,7 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
   if (flight) {
     bFly.hidden = false
     if (flight.name) bFly.title = `Fly: ${flight.name}`
-    bFly.addEventListener('click', () => { if (flight.state.on) flight.stop(); else { walk.stop(); flight.start() } })
+    bFly.addEventListener('click', () => { if (flight.state.on) flight.stop(); else { walk.stop(); aerial?.stop(); flight.start() } })
     flight.onZone = (z, i) => { bFly.classList.add('on'); bFly.textContent = `Zone ${i + 1}: ${z.alone ? 'one voice' : z.mix}${z.languages?.length ? ' ' + z.languages.join(' ') : ''}`; mixSel.value = mixValue(); panel.hidden = true }
     flight.onArrive = s => showPanel(s)
     flight.onStop = () => { bFly.classList.remove('on'); bFly.textContent = 'Fly'; if (quiz.on) finishQuiz() }
@@ -97,6 +100,39 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
     })
   }
 
+  // the flight (FLIGHT line): its button, the caption card, the bar fading while you watch
+  const card = root.querySelector('.hear-card')
+  const bFlight = hud.querySelector('[data-act="flight"]')
+  let idleTimer = 0
+  const idle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (aerial?.state.on && root.isConnected) root.classList.add('hear-idle') }, 3000) }
+  root.addEventListener('pointermove', () => { root.classList.remove('hear-idle'); idle() })
+  const startFlight = () => {
+    if (!aerial) return
+    walk.stop(); flight?.stop(); root._hearTrial?.abort?.()
+    root.querySelector('.hear-inside')?.remove(); sound.leave(); panel.hidden = true
+    aerial.start()
+  }
+  if (aerial && bFlight && card) {
+    bFlight.hidden = false
+    bFlight.title = `${aerial.name}: circle the city, dive to a house, cross to a house that speaks another language, climb and circle again`
+    bFlight.addEventListener('click', () => { if (aerial.state.on) aerial.stop(); else startFlight() })
+    aerial.onCaption = ({ title, detail, line, rtl }) => {
+      card.hidden = false
+      card.querySelector('.hear-card-title').textContent = title || ''
+      card.querySelector('.hear-card-detail').textContent = detail || ''
+      const l = card.querySelector('.hear-card-line'); l.textContent = line || ''; l.dir = rtl ? 'rtl' : 'auto'
+    }
+    aerial.onStage = () => { bFlight.classList.add('on'); bFlight.textContent = 'Stop the flight'; panel.hidden = true; root.classList.add('hear-flying'); idle() }
+    aerial.onStop = () => { bFlight.classList.remove('on'); bFlight.textContent = 'Take the flight'; card.hidden = true; root.classList.remove('hear-flying', 'hear-idle') }
+    root._hearFly = startFlight
+  }
+  // names over the houses: speaking (the default), all near, off; L on the keyboard
+  const bNames = hud.querySelector('[data-act="names"]')
+  const namesText = mode => { if (bNames) bNames.textContent = `Names: ${({ off: 'off', speaking: 'speaking', all: 'all near' })[mode] || mode}` }
+  if (world.labels) { world.labels.onChange = namesText; namesText(world.labels.mode); bNames?.addEventListener('click', () => world.labels.cycle()) }
+  const bFull = hud.querySelector('[data-act="full"]')
+  world.onTheatre = on => { if (bFull) bFull.textContent = on ? 'Leave full screen' : 'Full screen' }
+
   const manifests = new Map()
   const manifestOf = async s => {
     if (!manifests.has(s.id)) manifests.set(s.id, fetch(s.manifest, { mode: 'cors' }).then(r => r.json()).catch(() => null))
@@ -105,14 +141,23 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
 
   const goTo = id => {
     const s = speakers.find(x => x.id === id)
-    walk.stop(); world.threshold(id)
+    walk.stop(); aerial?.stop(); world.threshold(id); world.labels?.setLit([id]); world.highlight?.([id])
     if (sound.enabled) sound.listen(id); else sound.focus(id)   // from the top: the transcript starts at its first cue
     if (s) showPanel(s)
   }
   world.onPick = n => {
     const s = speakers.find(x => x.id === n.id)
     if (s) goTo(s.id)
-    else { openPage(div, n.title, n.site) }
+    else if (world.theatre?.on) showPage(n)   // full screen: say which page it is, and open it only when asked
+    else openHere(n.title, n.site)
+  }
+  const showPage = n => {
+    aerial?.stop()
+    panelId = n.id; panel.hidden = false; clearInterval(cueTimer)
+    world.labels?.setLit([n.id])
+    panel.innerHTML = `<button class="hear-panel-close" data-act="dismiss" title="Close">✕</button><div class="hear-role">a page with no voice</div><h4>${esc(n.title)}</h4><div style="color:#94a3b1;font-size:12px">${esc(n.site)}${n.topic ? ' · ' + esc(n.topic) : ''}</div><div class="hear-actions"><button data-act="open" class="primary">Open in the wiki</button></div>`
+    panel.querySelector('[data-act="dismiss"]').addEventListener('click', () => { panel.hidden = true })
+    panel.querySelector('[data-act="open"]').addEventListener('click', () => openHere(n.title, n.site))
   }
 
   let panelId = null, cueTimer = 0
@@ -121,7 +166,7 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
     panel.hidden = false
     const nat = s.native && sound.spokenOf?.(s.id) !== 'en'
     panel.innerHTML = `<button class="hear-panel-close" data-act="dismiss" title="Close the transcript">✕</button><div class="hear-role">${s.role === 'human_reading' ? 'human reading' : 'synthetic voice'} · ${esc(nat ? s.native_voice : s.voice || '')}${nat ? ` · in ${esc(s.language)}` : ''}</div><h4>${esc(s.title)}</h4><div style="color:#94a3b1;font-size:12px">${esc(s.heading || '')} · fragment ${esc(s.fragment_id || '')}${s.district ? ` · district ${esc(s.district)}` : ''}</div><div class="hear-cues"></div><div class="hear-prov">loading provenance…</div><div class="hear-actions"><button data-act="inside" class="primary">Go inside</button><button data-act="open">Open source page</button></div>`
-    panel.querySelector('[data-act="open"]').addEventListener('click', () => openPage(div, s.title, s.id.split('/')[0]))
+    panel.querySelector('[data-act="open"]').addEventListener('click', () => openHere(s.title, s.id.split('/')[0]))
     panel.querySelector('[data-act="dismiss"]').addEventListener('click', () => { panel.hidden = true })
     panel.querySelector('[data-act="inside"]').addEventListener('click', () => enterInterior(s))
     const cues = sound.enabled ? await sound.cues(s.id) : []
@@ -163,10 +208,11 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
       ${paras.slice(0, 4).map(it => `<p>${esc((it.text || '').replace(/\[\[([^\]]+)\]\]/g, '$1')).slice(0, 700)}</p>`).join('')}
       <div class="hear-prov">${a ? provHtml(m, a) : ''}</div>
       <div class="hear-actions"><button data-act="open" class="primary">Open the page in the wiki</button></div>`
-    body.querySelector('[data-act="open"]').addEventListener('click', () => openPage(div, s.title, site))
+    body.querySelector('[data-act="open"]').addEventListener('click', () => openHere(s.title, site))
   }
 
   sound.onTick = (list, lod, liveNodes) => {
+    world.labels?.setLit(list.filter(x => x.intelligible).map(x => x.id))
     const st = root.querySelector('.hear-status')
     if (!st) return
     const talking = list.filter(x => x.intelligible).map(x => `${short(x.title)}${x.language && x.language !== 'en' ? ` (${x.language})` : ''}`)
@@ -177,6 +223,7 @@ export function wireHud (root, world, sound, speakers, map, div, walk, flight = 
     const going = w.on ? (w.phase === 'leg' ? `walking to ${short(w.target.title)} · ${Math.round(w.remaining)} m · ` : `at ${short(w.target.title)}, listening · `) : ''
     st.textContent = `${flying}${going}${mixText}${lod} scale · ${list.length} of ${speakers.length} voices sounding, ${liveNodes} audio nodes alive · intelligible: ${talking.join(', ') || 'none'}`
   }
+  hud.querySelector('[data-act="trial"]').addEventListener('click', () => aerial?.stop())
   root._hearTrial = wireTrial(root, world, sound, speakers)
 }
 

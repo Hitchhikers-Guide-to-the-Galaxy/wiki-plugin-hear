@@ -4,6 +4,7 @@ import { makeSound } from './sound.js'
 import { wireHud } from './hud.js'
 import { makeWalk } from './walk.js'
 import { makeJourney } from './journey.js'
+import { makeFlight } from './flight.js'
 
 // wiki-plugin-hear — walk a page-level GMap as a street and hear its pages speak.
 //
@@ -16,6 +17,8 @@ import { makeJourney } from './journey.js'
 //   MODULE https://…/voice-chain.js           an ES module exporting createVoiceChain(ctx, voice, policy): per-voice DSP between the murmur filter and the bus
 //   MIX    solo es | pair es pt | polyphonic | native   which languages sound (Multilingual Mixes; overrides the policy)
 //   JOURNEY https://…/journey.json           a cue sheet of language zones: the Fly button carries you through them
+//   FLIGHT  https://…/flight.json | auto     an authored flight that owns camera and mix: circle the city, dive to a house,
+//                                            cross to a house in another language, climb, circle again (Take the flight)
 //
 // Geometry is built from map.json in code: regions extruded, houses as instanced
 // boxes sized by story length, the square a plaza, roads from the edges.  No
@@ -29,7 +32,7 @@ let stylesInjected = false
 
 // ------------------------------------------------------------------ DSL
 export const parseText = text => {
-  const spec = { map: '', media: '', policy: '', street: '', module: '', journey: '', mix: null, height: 520, caption: [] }
+  const spec = { map: '', media: '', policy: '', street: '', module: '', journey: '', flight: '', mix: null, height: 520, caption: [] }
   for (const raw of (text || '').split('\n')) {
     const line = raw.trim()
     if (!line) continue
@@ -42,6 +45,7 @@ export const parseText = text => {
     else if (cmd === 'STREET') spec.street = val
     else if (cmd === 'MODULE') spec.module = val
     else if (cmd === 'JOURNEY') spec.journey = val
+    else if (cmd === 'FLIGHT') spec.flight = val
     else if (cmd === 'MIX') { const [mode, ...langs] = val.split(/\s+/); spec.mix = { mode: mode.toLowerCase(), languages: langs.map(l => l.toLowerCase()) } }
     else if (cmd === 'HEIGHT') spec.height = Math.max(240, parseInt(val, 10) || 520)
     else spec.caption.push(line)
@@ -119,6 +123,27 @@ const ensureStyle = () => {
 .hear-trial textarea{width:100%;min-height:48px;background:#0d1219;color:#e8eef4;border:1px solid #3a4652;border-radius:5px;margin:6px 0}
 .hear-trial pre{font-size:10px;white-space:pre-wrap;color:#b8c4cf;max-height:180px;overflow:auto;background:#0d1219;padding:6px;border-radius:5px}
 .hear-trial .hear-timer{float:right;color:#94a3b1;font-size:12px}
+.hear-shell{overscroll-behavior:contain}
+.hear-shell.hear-theatre{position:fixed!important;inset:0;width:100vw;height:100vh!important;height:100dvh!important;z-index:2147483000;border-radius:0;margin:0}
+html.hear-theatre-on,html.hear-theatre-on body{overflow:hidden!important;overscroll-behavior:none}
+.hear-home{background:#0d1219;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#7d8b98;font:13px/1.4 -apple-system,Helvetica,Arial,sans-serif;padding:0 20px;text-align:center}
+.hear-theatre .hear-panel{width:min(34%,420px);max-height:70%}
+.hear-theatre .hear-trial{left:20%;right:20%}
+.hear-hud,.hear-status,.hear-hint{transition:opacity .6s}
+.hear-idle .hear-hud,.hear-idle .hear-status,.hear-idle .hear-hint{opacity:0}
+.hear-idle .hear-hud>*{pointer-events:none}
+.hear-idle canvas{cursor:none}
+.hear-flying .hear-status{opacity:0}
+.hear-card{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:3;width:max-content;max-width:min(820px,88%);text-align:center;pointer-events:none;background:rgba(10,14,20,.66);border-radius:10px;padding:10px 18px 12px;box-shadow:0 4px 24px rgba(0,0,0,.25)}
+.hear-card[hidden]{display:none}
+.hear-card-title{font-size:19px;font-weight:600;color:#fff}
+.hear-card-detail{font-size:12px;color:#c4d0db;margin-top:2px}
+.hear-card-line{margin-top:8px;font-size:17px;line-height:1.4;color:#fff}
+.hear-card-line:empty{display:none}
+.hear-theatre .hear-card{bottom:5vh}
+.hear-theatre .hear-card-title{font-size:26px}
+.hear-theatre .hear-card-detail{font-size:14px}
+.hear-theatre .hear-card-line{font-size:24px}
 `
   const style = document.createElement('style')
   style.textContent = css
@@ -130,6 +155,7 @@ const shellHtml = spec => `
 <div class="hear-shell" style="height:${spec.height}px">
   <div class="hear-stage"></div>
   <div class="hear-hud" hidden>
+    <button data-act="flight" hidden>Take the flight</button>
     <button data-act="mute" title="Mute everything">Mute</button>
     <button data-act="pause" title="Pause the voices, keep the place">Pause voices</button>
     <label>human <input type="range" data-bus="human_speech" min="0" max="100" value="100"></label>
@@ -142,6 +168,7 @@ const shellHtml = spec => `
     <button data-act="next" title="On to the next house">Next</button>
     <button data-act="trial" title="The One Audible Street questions: four short tasks, results you can copy">Listening game</button>
     <button data-act="full" title="Full screen (F); Esc leaves">Full screen</button>
+    <button data-act="names" title="Names over the houses: speaking, all near, off (L)">Names: speaking</button>
     <span class="hear-pad" title="Walk: hold a key, or W A S D on the keyboard"><button data-key="a">◀</button><button data-key="w">▲</button><button data-key="s">▼</button><button data-key="d">▶</button><button data-key="q">↑</button><button data-key="e">↓</button></span>
     <button data-act="close" class="hear-close" title="Close: back to the beginning, silent, the gate up">✕ Close</button>
   </div>
@@ -149,9 +176,11 @@ const shellHtml = spec => `
   <div class="hear-hint" hidden>drag to look · W A S D to walk · Q E up down · click a house · Walk to be carried</div>
   <div class="hear-status" hidden></div>
   <div class="hear-panel" hidden></div>
+  <div class="hear-card" hidden><div class="hear-card-title"></div><div class="hear-card-detail"></div><div class="hear-card-line" dir="auto"></div></div>
   <div class="hear-gate">
     <h3>Hear Crowds</h3>
     <p>A street of pages that speak. Nothing sounds until you enter; the voices are readings of constitutional text, most of them synthetic and labelled so.</p>
+    <button data-act="flyin" hidden title="Full screen, sound on, and the flight begins">Take the flight</button>
     <button data-act="enter">Enter the soundscape</button>
     <button data-act="quiet" class="hear-quiet">Walk it silently</button>
   </div>
@@ -209,11 +238,12 @@ const webglAvailable = () => {
 async function start (root, spec, div) {
   if (!spec.map) { setStatus(root, 'Give a MAP line: the URL of a map.json.'); return }
   setStatus(root, 'Loading the map…')
-  const [map, media, policyRaw, journey] = await Promise.all([
+  const [map, media, policyRaw, journey, flightSheet] = await Promise.all([
     fetchJson(spec.map),
     spec.media ? fetchJson(spec.media).catch(() => null) : null,
     spec.policy ? fetchJson(spec.policy).catch(() => null) : null,
-    spec.journey ? fetchJson(spec.journey).catch(() => null) : null
+    spec.journey ? fetchJson(spec.journey).catch(() => null) : null,
+    spec.flight ? (/^auto$/i.test(spec.flight) ? {} : fetchJson(spec.flight).catch(err => { console.warn('hear: flight sheet did not load', err); return null })) : null
   ])
   const policy = Object.assign({}, DEFAULT_POLICY, policyRaw || {})
   policy.hysteresis = Object.assign({}, DEFAULT_POLICY.hysteresis, policy.hysteresis || {})
@@ -244,7 +274,8 @@ async function start (root, spec, div) {
   const sound = makeSound(three, world, speakers, policy, root, chainFactory)
   const walk = makeWalk(world, sound, speakers, map)
   const flight = journey ? makeJourney(world, sound, speakers, map, journey) : null
-  wireHud(root, world, sound, speakers, map, div, walk, flight)
+  const aerial = flightSheet ? makeFlight(world, sound, speakers, map, flightSheet) : null
+  wireHud(root, world, sound, speakers, map, div, walk, flight, aerial)
   const natives = speakers.filter(s => s.native).length
   root._hearBaseStatus = `${map.nodes.length} pages · ${map.regions.length} regions · ${speakers.length} voices, ${natives} in their own language · policy ${policyRaw?.policy_id || 'default'} · mix ${policy.mix}${policy.languages?.length ? ' ' + policy.languages.join(' ') : ''}`
   setStatus(root, root._hearBaseStatus)
@@ -254,7 +285,17 @@ async function start (root, spec, div) {
     closeGate(root)
   })
   root.querySelector('[data-act="quiet"]').addEventListener('click', () => { if (sound.enabled) sound.silence(); closeGate(root) })
-  root._hear = { world, sound, walk, flight, speakers, policy, dispose: () => { flight?.dispose(); walk.dispose(); world.dispose(); sound.dispose() } }
+  const flyIn = root.querySelector('[data-act="flyin"]')
+  if (aerial && flyIn) {
+    flyIn.hidden = false
+    flyIn.addEventListener('click', async () => {
+      world.theatre.full()   // inside the click, so the browser grants full screen
+      await sound.enable()
+      closeGate(root)
+      root._hearFly?.()
+    })
+  }
+  root._hear = { world, sound, walk, flight, aerial, speakers, policy, dispose: () => { aerial?.dispose(); flight?.dispose(); walk.dispose(); world.dispose(); sound.dispose() } }
 }
 
 const closeGate = root => {

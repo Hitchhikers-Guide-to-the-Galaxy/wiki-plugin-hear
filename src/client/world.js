@@ -49,6 +49,17 @@ export function buildWorld (three, root, map, speakers, squareId) {
     }
   }
 
+  // footprints from the city's own grain (0.9.0).  GMap packs pages about a metre apart (median nearest neighbour 0.94 m
+  // at street scale on the legalcommons map), so fixed 2.2 m and 1.3 m boxes overlapped into one plateau that hid every
+  // street.  Each house now takes a share of the distance to its nearest neighbour, never more than the old sizes, so a
+  // sparse map looks as it did and a dense one shows its lanes.
+  const nearest = new Map()
+  {
+    const pts = map.nodes.map(n => [n.id, ...nodePos.get(n.id)])
+    for (const [id, x, z] of pts) { let d = Infinity; for (const [id2, x2, z2] of pts) if (id2 !== id) { const e = (x - x2) ** 2 + (z - z2) ** 2; if (e < d) d = e } nearest.set(id, Math.sqrt(d)) }
+  }
+  const widthOf = n => { const sp = speakerIds.has(n.id); return Math.max(0.35, Math.min(sp ? 2.2 : 1.3, (nearest.get(n.id) ?? 9) * (sp ? 0.75 : 0.62))) }
+
   // houses: one instanced mesh, speakers taller and outlined
   const box = new three.BoxGeometry(1, 1, 1)
   box.translate(0, 0.5, 0)
@@ -58,7 +69,7 @@ export function buildWorld (three, root, map, speakers, squareId) {
   map.nodes.forEach((n, i) => {
     const [x, z] = nodePos.get(n.id)
     const h = heightOf(n)
-    const w = speakerIds.has(n.id) ? 2.2 : 1.3
+    const w = widthOf(n)
     dummy.position.set(x, 0.5, z); dummy.scale.set(w, h, w); dummy.updateMatrix()
     houses.setMatrixAt(i, dummy.matrix)
     const c = (regionColour.get(n.region) || new three.Color(0x8fa8bf)).clone().lerp(new three.Color(0x222222), 0.25)
@@ -70,6 +81,22 @@ export function buildWorld (three, root, map, speakers, squareId) {
   houses.instanceMatrix.needsUpdate = true
   if (houses.instanceColor) houses.instanceColor.needsUpdate = true
   scene.add(houses)
+  // the house you are going to, or hearing, is lit gold: a red speaking house in a red region otherwise disappears
+  // into the ground from its own door (seen on the first flight test at Paraguay)
+  const baseColour = new Map()
+  let litHouses = []
+  const gold = new three.Color(0xffd27a)
+  const highlight = ids => {
+    for (const i of litHouses) houses.setColorAt(i, baseColour.get(i))
+    litHouses = []
+    const c = new three.Color()
+    for (const id of ids || []) {
+      const i = index.findIndex(n => n.id === id); if (i < 0) continue
+      if (!baseColour.has(i)) { houses.getColorAt(i, c); baseColour.set(i, c.clone()) }
+      houses.setColorAt(i, gold); litHouses.push(i)
+    }
+    if (houses.instanceColor) houses.instanceColor.needsUpdate = true
+  }
 
   // the square: a plaza disc
   const sq = map.nodes.find(n => n.id === squareId)
@@ -92,19 +119,57 @@ export function buildWorld (three, root, map, speakers, squareId) {
   if (thin.length) scene.add(mkLines(thin, 0x42586a, 0.25))
   if (thick.length) scene.add(mkLines(thick, 0xb0432e, 0.9))
 
-  // labels for the speakers and the square (canvas sprites)
-  const label = (text, x, y, z, big) => {
-    const c = document.createElement('canvas'); const ctx = c.getContext('2d')
-    ctx.font = `${big ? 44 : 34}px Helvetica, Arial`; const w = Math.ceil(ctx.measureText(text).width) + 24
-    c.width = w; c.height = big ? 64 : 52
-    ctx.font = `${big ? 44 : 34}px Helvetica, Arial`; ctx.fillStyle = 'rgba(244,248,251,.85)'; ctx.fillRect(0, 0, w, c.height)
-    ctx.fillStyle = big ? '#7a2a1a' : '#2a3a48'; ctx.textBaseline = 'middle'; ctx.fillText(text, 12, c.height / 2)
+  // names (0.9.0): no carpet of labels over the city.  A small sprite per house, made on first need, a constant size
+  // on screen, hidden behind buildings, faded with distance.  By default only the square and the houses speaking
+  // clearly now carry a name, so the city's own shape shows; "all" names the speaking houses near you; "off" nothing.
+  const smooth01 = t => { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t) }
+  const sprites = new Map()
+  const makeLabel = (text, big) => {
+    const c = document.createElement('canvas'); const g = c.getContext('2d')
+    const px = big ? 40 : 32
+    g.font = `600 ${px}px Helvetica, Arial`; const w = Math.ceil(g.measureText(text).width) + 28
+    c.width = w; c.height = Math.round(px * 1.6)
+    g.font = `600 ${px}px Helvetica, Arial`; g.fillStyle = 'rgba(13,18,25,.74)'
+    const r = c.height / 2
+    g.beginPath(); g.moveTo(r, 0); g.lineTo(w - r, 0); g.arc(w - r, r, r, -Math.PI / 2, Math.PI / 2); g.lineTo(r, c.height); g.arc(r, r, r, Math.PI / 2, Math.PI * 1.5); g.fill()
+    g.fillStyle = big ? '#f3c77a' : '#f4f8fb'; g.textBaseline = 'middle'; g.fillText(text, 14, c.height / 2 + 1)
     const tex = new three.CanvasTexture(c); tex.colorSpace = three.SRGBColorSpace
-    const sp = new three.Sprite(new three.SpriteMaterial({ map: tex, depthTest: false }))
-    sp.scale.set(w / 26, c.height / 26, 1); sp.position.set(x, y, z); scene.add(sp); return sp
+    const sp = new three.Sprite(new three.SpriteMaterial({ map: tex, depthTest: true, depthWrite: false, transparent: true, opacity: 0, sizeAttenuation: false }))
+    const hgt = big ? 0.042 : 0.034   // a share of the view's height, whatever the distance
+    sp.scale.set(hgt * w / c.height, hgt, 1); sp.center.set(0.5, 0); sp.renderOrder = 2; sp.visible = false
+    scene.add(sp); return sp
   }
-  for (const s of speakers) { const [x, z] = nodePos.get(s.id); const n = nodesById(map, s.id); label(short(s.title), x, heightOf(n) + 1.6, z, false) }
-  if (sq) label(sq.title, sqPos[0], 3.2, sqPos[1], true)
+  const labelOf = id => {
+    if (sprites.has(id)) return sprites.get(id)
+    const n = nodesById(map, id); const p = nodePos.get(id)
+    if (!n || !p) return null
+    const sp = makeLabel(id === squareId ? n.title : short(n.title), id === squareId)
+    sp.position.set(p[0], (id === squareId ? 1.2 : heightOf(n)) + 0.6, p[1])
+    sprites.set(id, sp); return sp
+  }
+  const labels = {
+    mode: 'speaking', lit: new Set(), onChange: null,
+    setMode (m) { labels.mode = ['off', 'speaking', 'all'].includes(m) ? m : 'speaking'; labels.onChange?.(labels.mode) },
+    cycle () { labels.setMode({ off: 'speaking', speaking: 'all', all: 'off' }[labels.mode]) },
+    setLit (ids) { labels.lit = new Set(ids || []) }
+  }
+  const updateLabels = dt => {
+    const show = new Set()
+    if (labels.mode !== 'off') {
+      if (squareId) show.add(squareId)
+      for (const id of labels.lit) show.add(id)
+      if (labels.mode === 'all') for (const s of speakers) { const p = nodePos.get(s.id); if (p && Math.hypot(p[0] - camera.position.x, p[1] - camera.position.z) < 30) show.add(s.id) }
+    }
+    for (const id of show) labelOf(id)
+    const k = Math.min(1, dt * 5)
+    const far = labels.mode === 'all' ? 30 : 90
+    for (const [id, sp] of sprites) {
+      const d = sp.position.distanceTo(camera.position)
+      const want = show.has(id) ? 1 - smooth01((d - far * 0.65) / (far * 0.35)) : 0
+      sp.material.opacity += (want - sp.material.opacity) * k
+      sp.visible = sp.material.opacity > 0.02
+    }
+  }
 
   // camera + controls: yaw/pitch, WASD, above/threshold presets
   const ctl = { yaw: 0, pitch: -0.55, pos: new three.Vector3(sqPos[0], 14, sqPos[1] + 22), keys: new Set(), drag: null, mode: 'outside' }
@@ -129,11 +194,11 @@ export function buildWorld (three, root, map, speakers, squareId) {
   el.tabIndex = 0
   el.style.outline = 'none'
   el.style.touchAction = 'none'
-  const onDown = e => { ctl.drag = { x: e.clientX, y: e.clientY, moved: false }; el.focus(); el.setPointerCapture?.(e.pointerId) }
+  const onDown = e => { ctl.drag = { x: e.clientX, y: e.clientY, moved: false }; el.focus({ preventScroll: true }); el.setPointerCapture?.(e.pointerId) }
   const onMove = e => {
     if (!ctl.drag) return
     const dx = e.clientX - ctl.drag.x, dy = e.clientY - ctl.drag.y
-    if (Math.abs(dx) + Math.abs(dy) > 3) ctl.drag.moved = true
+    if (Math.abs(dx) + Math.abs(dy) > 3) { ctl.drag.moved = true; ctl.userAt = performance.now() }
     ctl.yaw += dx * 0.005; ctl.pitch = Math.max(-1.4, Math.min(1.2, ctl.pitch - dy * 0.005))
     ctl.drag.x = e.clientX; ctl.drag.y = e.clientY
   }
@@ -152,17 +217,71 @@ export function buildWorld (three, root, map, speakers, squareId) {
     if ('wasdqe'.includes(k) || k.startsWith('arrow')) { if (down) ctl.keys.add(k); else ctl.keys.delete(k); e.preventDefault() }
   }
   el.addEventListener('pointerdown', onDown); el.addEventListener('pointermove', onMove); el.addEventListener('pointerup', onUp)
+  // a trackpad or wheel moves you over the ground (a pinch moves you up and down) and never scrolls the page, or swipes
+  // the browser back, underneath the place
+  const onWheel = e => {
+    e.preventDefault()
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
+    const dx = e.deltaX * unit, dy = e.deltaY * unit
+    const rate = Math.max(0.02, ctl.pos.y * 0.004)
+    if (e.ctrlKey) ctl.pos.y = Math.max(1.5, Math.min(120, ctl.pos.y + dy * rate * 2))
+    else {
+      ctl.pos.x += (Math.cos(ctl.yaw) * dx - Math.sin(ctl.yaw) * dy) * rate
+      ctl.pos.z += (Math.sin(ctl.yaw) * dx + Math.cos(ctl.yaw) * dy) * rate
+    }
+    ctl.userAt = performance.now()
+  }
+  el.addEventListener('wheel', onWheel, { passive: false })
   // keys work whenever the pointer is over the place or something inside it has focus —
   // a listener who has just clicked a trial button must still be able to walk
   let hovering = false
   root.tabIndex = -1; root.style.outline = 'none'
   root.addEventListener('pointerenter', () => { hovering = true }); root.addEventListener('pointerleave', () => { hovering = false })
-  const wants = e => root.isConnected && (hovering || root.contains(document.activeElement)) && !e.target.matches?.('input,textarea,select')
-  const onWinKey = (e, down) => { if (!wants(e)) return; if (down && e.key.toLowerCase() === 'f' && !e.repeat) { toggleFull(); e.preventDefault(); return } onKey(e, down) }
+  const wants = e => root.isConnected && (inTheatre() || hovering || root.contains(document.activeElement)) && !e.target.matches?.('input,textarea,select')
+  const onWinKey = (e, down) => {
+    if (!wants(e)) return
+    const k = e.key.toLowerCase()
+    if (down && !e.repeat && k === 'f') { if (inTheatre()) { if (fsEl()) exitFs(); else requestFs() } else full(); e.preventDefault(); return }
+    if (down && !e.repeat && k === 'l') { labels.cycle(); e.preventDefault(); return }
+    if (down && k === 'escape' && inTheatre() && !fsEl()) { leaveTheatre(); e.preventDefault(); return }
+    onKey(e, down)
+  }
   const onKD = e => onWinKey(e, true), onKU = e => onWinKey(e, false), onBlur = () => ctl.keys.clear()
   window.addEventListener('keydown', onKD); window.addEventListener('keyup', onKU); window.addEventListener('blur', onBlur)
-  const toggleFull = () => { if (document.fullscreenElement === root) document.exitFullscreen?.(); else root.requestFullscreen?.().catch(() => {}) }
-  root.querySelector('[data-act="full"]')?.addEventListener('click', toggleFull)
+
+  // the stage that holds (0.9.0).  Full screen first lifts the place out of the wiki's lineup into a window-sized layer
+  // on the body, so nothing the wiki does to its item (a re-render, the editor, a page opened beside it, the lineup
+  // scrolling) can detach it; then it asks the browser for full screen on top.  Leaving the browser's full screen (Esc,
+  // F, a gesture, the system) keeps the theatre: the place still fills the window.  Esc again, the button or Close put
+  // the place back where it was on the page.
+  let home = null
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null
+  const requestFs = () => { try { const p = (root.requestFullscreen || root.webkitRequestFullscreen)?.call(root); p?.catch?.(() => {}) } catch {} }
+  const exitFs = () => { try { const p = (document.exitFullscreen || document.webkitExitFullscreen)?.call(document); p?.catch?.(() => {}) } catch {} }
+  const inTheatre = () => root.classList.contains('hear-theatre')
+  const enterTheatre = () => {
+    if (inTheatre()) return
+    home = document.createElement('div'); home.className = 'hear-home'; home.style.height = root.style.height || '520px'
+    home.textContent = 'The place is open full screen. Esc, or the button, brings it back here.'
+    root.before(home)
+    document.body.appendChild(root)
+    root.classList.add('hear-theatre'); document.documentElement.classList.add('hear-theatre-on')
+    root.focus({ preventScroll: true })
+    world.onTheatre?.(true, !!fsEl())
+  }
+  const leaveTheatre = () => {
+    if (!inTheatre()) return
+    if (fsEl() === root) exitFs()
+    root.classList.remove('hear-theatre'); document.documentElement.classList.remove('hear-theatre-on')
+    const back = home; home = null
+    if (back?.isConnected) back.replaceWith(root)
+    else { back?.remove(); root._hear?.dispose?.(); root.remove(); return }   // the wiki re-rendered the item meanwhile: its new copy stands in
+    world.onTheatre?.(false, false)
+  }
+  const full = () => { enterTheatre(); requestFs() }
+  const onFsChange = () => world.onTheatre?.(inTheatre(), fsEl() === root)
+  document.addEventListener('fullscreenchange', onFsChange); document.addEventListener('webkitfullscreenchange', onFsChange)
+  root.querySelector('[data-act="full"]')?.addEventListener('click', () => { if (inTheatre()) leaveTheatre(); else full() })
   root.querySelectorAll('.hear-pad button[data-key]').forEach(b => {
     const k = b.dataset.key
     const press = e => { e.preventDefault(); ctl.keys.add(k); b.classList.add('on'); b.setPointerCapture?.(e.pointerId) }
@@ -182,11 +301,17 @@ export function buildWorld (three, root, map, speakers, squareId) {
   const forward = new three.Vector3(), right = new three.Vector3()
   const world = {
     three, scene, camera, renderer, nodePos, heightOf, index, speakers, squareId, sqPos, ctl,
-    above, threshold, lookAtPoint, applyCam, onPick: null, onFrame: null,
+    above, threshold, lookAtPoint, applyCam, onPick: null, onFrame: null, onTheatre: null, labels,
+    widthOf,   // a house's footprint, as built above
+    highlight,
+    theatre: { enter: enterTheatre, leave: leaveTheatre, full, get on () { return inTheatre() }, get fullscreen () { return fsEl() === root } },
     dispose () {
       if (disposed) return
       disposed = true; cancelAnimationFrame(raf); ro.disconnect()
       window.removeEventListener('keydown', onKD); window.removeEventListener('keyup', onKU); window.removeEventListener('blur', onBlur)
+      document.removeEventListener('fullscreenchange', onFsChange); document.removeEventListener('webkitfullscreenchange', onFsChange)
+      el.removeEventListener('wheel', onWheel)
+      if (inTheatre()) { if (fsEl() === root) exitFs(); root.classList.remove('hear-theatre'); document.documentElement.classList.remove('hear-theatre-on'); home?.remove() }
       renderer.dispose(); el.remove()
     }
   }
@@ -207,6 +332,7 @@ export function buildWorld (three, root, map, speakers, squareId) {
     ctl.mode = ctl.pos.y > 6 ? 'outside' : (ctl.mode === 'inside' ? 'inside' : 'threshold')
     applyCam()
     world.onFrame?.(dt)
+    updateLabels(dt)
     renderer.render(scene, camera)
   }
   raf = requestAnimationFrame(tick)
